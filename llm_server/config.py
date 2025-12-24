@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     port: int = 8777
     model_name: Optional[str] = None  # None = use llm library default (gpt-4o-mini)
     debug: bool = False
+    pidfile: Optional[str] = None
+    logfile: Optional[str] = None
 
     class Config:
         env_prefix = "LLM_SERVER_"
