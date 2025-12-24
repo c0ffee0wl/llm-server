@@ -6,7 +6,6 @@ import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -24,18 +23,11 @@ from ..adapters.openai_adapter import (
     extract_tool_results,
 )
 from ..adapters.tool_adapter import format_tool_call_response
-from ..config import settings
+from ..config import settings, is_gemini_model
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _is_gemini_model(model_name: str) -> bool:
-    """Check if the model is a Gemini/Vertex model."""
-    if not model_name:
-        return False
-    return model_name.startswith("gemini/") or model_name.startswith("vertex/")
 
 
 def find_model_by_query(queries: List[str]) -> Optional[llm.Model]:
@@ -140,8 +132,6 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     Supports both streaming and non-streaming responses.
     """
-    import traceback
-
     # Debug logging (only when --debug flag is set)
     if settings.debug:
         logger.debug("=== Chat request ===")
@@ -219,7 +209,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
     llm_tools = convert_tool_definitions(tools_raw)
 
     # Extract tool results from messages (works for all models now - names are guaranteed non-empty)
-    is_gemini = _is_gemini_model(model_name)
+    is_gemini = is_gemini_model(model_name)
     tool_results = extract_tool_results(messages_raw)
     if settings.debug and tool_results:
         logger.debug(f"Extracted {len(tool_results)} tool results")

@@ -17,3 +17,10 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def is_gemini_model(model_name: str) -> bool:
+    """Check if the model is a Gemini/Vertex model."""
+    if not model_name:
+        return False
+    return model_name.startswith("gemini/") or model_name.startswith("vertex/")

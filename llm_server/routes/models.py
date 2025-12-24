@@ -13,7 +13,7 @@ router = APIRouter()
 
 # Model list cache with TTL
 _model_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
-_CACHE_TTL = 60.0  # Cache for 60 seconds
+_CACHE_TTL = 3600.0  # Cache for 1 hour
 
 
 def _get_model_capabilities(model: llm.Model) -> Dict[str, Any]:

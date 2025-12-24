@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 import llm
 
-from ..config import settings
+from ..config import settings, is_gemini_model
 
 # Thread pool for blocking LLM operations
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -22,13 +22,6 @@ _executor = ThreadPoolExecutor(max_workers=4)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _is_gemini_model(model_name: str) -> bool:
-    """Check if the model is a Gemini/Vertex model."""
-    if not model_name:
-        return False
-    return model_name.startswith("gemini/") or model_name.startswith("vertex/")
 
 
 def generate_completion_id() -> str:
@@ -147,7 +140,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
         options["top_p"] = request.top_p
 
     # max_tokens handling (skip for Gemini)
-    is_gemini = _is_gemini_model(actual_model_name)
+    is_gemini = is_gemini_model(actual_model_name)
     if request.max_tokens is not None and not is_gemini:
         options["max_tokens"] = request.max_tokens
 
