@@ -1,10 +1,16 @@
 """Configuration for the LLM server."""
 
 import atexit
+import hashlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pydantic_settings import BaseSettings
 from typing import Optional
+
+import llm
+import sqlite_utils
+from llm.migrations import migrate
 
 
 class Settings(BaseSettings):
@@ -16,6 +22,7 @@ class Settings(BaseSettings):
     debug: bool = False
     pidfile: Optional[str] = None
     logfile: Optional[str] = None
+    no_log: bool = False  # Disable database logging of requests/responses
     max_workers: int = 10  # Thread pool size for concurrent LLM operations
     request_timeout: float = 300.0  # Timeout in seconds for LLM requests
     cleanup_timeout: float = 5.0  # Seconds to wait for streaming thread cleanup
@@ -25,6 +32,128 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+class ConversationTracker:
+    """Track conversations by hashing message history.
+
+    This allows detecting when a new request continues a previous conversation,
+    even though the OpenAI API is stateless.
+
+    After each response, we store: hash(all_messages) -> conversation_id
+    On new request, we compute: hash(messages_except_last) and look it up.
+    """
+
+    # Role normalization: numeric roles to string
+    ROLE_MAP = {0: "system", 1: "user", 2: "assistant", 3: "tool"}
+    MAX_CACHE_SIZE = 10000  # Limit memory usage
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._hash_to_conv_id: dict[str, str] = {}
+
+    def _normalize_role(self, role) -> str:
+        """Normalize role to string format."""
+        if isinstance(role, bool):
+            # bool is subclass of int, handle separately
+            return "user"
+        if isinstance(role, int):
+            return self.ROLE_MAP.get(role, "user")
+        return str(role) if role else "user"
+
+    def _normalize_content(self, content) -> str:
+        """Extract text content from various formats."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            # Multimodal content - just use text parts for hashing
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and "text" in part:
+                    text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            return "\n".join(text_parts)
+        return str(content)
+
+    def _hash_messages(self, messages: list[dict]) -> Optional[str]:
+        """Create a stable hash of a message sequence.
+
+        Only considers user and assistant messages (ignores system, tool).
+        This provides stable conversation tracking even with tool-using conversations.
+
+        Returns None if there are no user/assistant messages to hash.
+        """
+        normalized = []
+        for msg in messages:
+            role = self._normalize_role(msg.get("role"))
+
+            # Only hash user and assistant messages
+            if role not in ("user", "assistant"):
+                continue
+
+            content = self._normalize_content(msg.get("content"))
+            normalized.append({"role": role, "content": content})
+
+        # No user/assistant messages - can't create meaningful hash
+        if not normalized:
+            return None
+
+        # Create deterministic JSON and hash it
+        json_str = json.dumps(normalized, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(json_str.encode()).hexdigest()[:16]
+
+    def find_conversation(self, messages: list[dict]) -> Optional[str]:
+        """Look up conversation ID for a message sequence.
+
+        Hashes all messages except the last (assumed to be the new user message)
+        and looks up if we've seen this prefix before.
+
+        Returns conversation_id if found, None otherwise.
+        """
+        if len(messages) <= 1:
+            # First message in conversation, no prefix to look up
+            return None
+
+        prefix = messages[:-1]
+        prefix_hash = self._hash_messages(prefix)
+
+        # Empty hash means no user/assistant messages in prefix - can't match
+        if prefix_hash is None:
+            return None
+
+        with self._lock:
+            return self._hash_to_conv_id.get(prefix_hash)
+
+    def store_conversation(self, messages: list[dict], response_text: str, conversation_id: str):
+        """Store the conversation state after a response.
+
+        Adds the assistant response to messages and stores the hash -> conversation_id
+        mapping so future requests can find this conversation.
+        """
+        full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
+        full_hash = self._hash_messages(full_messages)
+
+        # No meaningful hash (shouldn't happen since we just added assistant msg)
+        if full_hash is None:
+            return
+
+        with self._lock:
+            # Evict oldest entries if cache is too large
+            if len(self._hash_to_conv_id) >= self.MAX_CACHE_SIZE:
+                # Remove ~10% of entries (simple eviction, not LRU)
+                keys_to_remove = list(self._hash_to_conv_id.keys())[:self.MAX_CACHE_SIZE // 10]
+                for key in keys_to_remove:
+                    del self._hash_to_conv_id[key]
+
+            self._hash_to_conv_id[full_hash] = conversation_id
+
+
+# Global conversation tracker instance
+conversation_tracker = ConversationTracker()
+
 
 # Lazy initialization for executor to respect runtime settings changes
 _executor: Optional[ThreadPoolExecutor] = None
@@ -175,3 +304,51 @@ def find_model_by_query(queries: list[str]):
         if all(q.lower() in model_id_lower for q in queries):
             return model
     return None
+
+
+def log_response_to_db(response, messages: list[dict] = None):
+    """Log an LLM response to the database with conversation tracking.
+
+    Uses llm.user_dir() to find the config directory and logs to log-server.db.
+    Calls migrate() and response.log_to_db() from the llm library.
+
+    If messages are provided, tracks the conversation so future requests
+    with the same message prefix will be grouped together.
+
+    Respects the no_log setting. Errors are logged but don't propagate.
+    """
+    if settings.no_log:
+        return
+    import logging
+    from llm.models import Conversation
+    logger = logging.getLogger(__name__)
+    try:
+        # Look up or create conversation ID based on message history
+        conv_id = None
+        if messages:
+            conv_id = conversation_tracker.find_conversation(messages)
+
+        if not conv_id:
+            # New conversation - generate ID from first message hash
+            import uuid
+            conv_id = str(uuid.uuid4())
+
+        # Set conversation on response before logging
+        if not response.conversation:
+            response.conversation = Conversation(model=response.model, id=conv_id)
+
+        # Log to database
+        db = sqlite_utils.Database(llm.user_dir() / "log-server.db")
+        migrate(db)
+        response.log_to_db(db)
+
+        # Store conversation state for future lookups
+        if messages:
+            try:
+                response_text = response.text()
+            except Exception:
+                response_text = ""
+            conversation_tracker.store_conversation(messages, response_text, conv_id)
+
+    except Exception as e:
+        logger.warning(f"Failed to log response to database: {e}")

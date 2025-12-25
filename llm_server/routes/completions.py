@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import llm
 
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, executor, get_model_with_fallback
+from ..config import settings, executor, get_model_with_fallback, log_response_to_db
 from ..streaming.sse import stream_llm_response, format_sse_message
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                 response_id=response_id,
                 response_type="completion",
                 debug=settings.debug,
+                on_complete=log_response_to_db,
             )
 
             # Wrap stream if echo or suffix is requested
@@ -261,6 +262,9 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
             # Apply suffix: append if provided
             if request.suffix:
                 full_text = full_text + request.suffix
+
+            # Log response to database
+            log_response_to_db(response)
 
             return JSONResponse(
                 content={

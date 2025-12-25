@@ -191,6 +191,7 @@ def run():
     parser.add_argument('--daemon', action='store_true', help='Run as a background daemon')
     parser.add_argument('--pidfile', default=None, help='PID file path (used with --daemon)')
     parser.add_argument('--logfile', default=None, help='Log file path (used with --daemon)')
+    parser.add_argument('-n', '--no-log', action='store_true', dest='no_log', help="Don't log requests/responses to database")
 
     args = parser.parse_args()
 
@@ -207,6 +208,8 @@ def run():
         settings.pidfile = args.pidfile
     if args.logfile:
         settings.logfile = args.logfile
+    if args.no_log:
+        settings.no_log = True
 
     # Daemonize before configuring logging (redirects file descriptors)
     if args.daemon:

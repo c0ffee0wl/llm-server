@@ -35,6 +35,7 @@ async def stream_llm_response(
     response_id: str,
     response_type: str = "chat",
     debug: bool = False,
+    on_complete: Optional[callable] = None,
 ) -> AsyncIterator[str]:
     """
     Stream an LLM response using Server-Sent Events.
@@ -49,6 +50,8 @@ async def stream_llm_response(
         response_id: Unique response ID for this stream
         response_type: Either "chat" for chat completions or "completion" for text completions
         debug: Whether to log debug information
+        on_complete: Optional callback to run after streaming completes successfully.
+                     Called with the response object. Used for logging to database.
 
     Yields:
         SSE formatted messages
@@ -247,6 +250,14 @@ async def stream_llm_response(
 
         yield format_sse_message(final_msg)
         yield format_sse_done()
+
+        # Call completion callback (e.g., for database logging)
+        if on_complete is not None:
+            try:
+                on_complete(response)
+            except Exception as e:
+                if debug:
+                    logger.debug(f"Error in on_complete callback: {e}")
 
         if debug:
             logger.debug("SSE generator completed successfully")

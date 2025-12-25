@@ -20,7 +20,7 @@ from ..adapters.openai_adapter import (
 )
 from ..adapters.tool_adapter import format_tool_call_response
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, executor, get_model_with_fallback
+from ..config import settings, executor, get_model_with_fallback, log_response_to_db, conversation_tracker
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 "x-ms-client-request-id": response_id,
                 **base_headers,
             }
+            # Create callback that passes messages for conversation tracking
+            def on_stream_complete(resp):
+                log_response_to_db(resp, messages_raw)
+
             return StreamingResponse(
                 stream_llm_response(
                     response=response,
@@ -260,6 +264,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     response_id=response_id,
                     response_type="chat",
                     debug=settings.debug,
+                    on_complete=on_stream_complete,
                 ),
                 media_type="text/event-stream",
                 headers=stream_headers,
@@ -302,12 +307,16 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 base_headers["X-Tool-Call-Warning"] = tool_call_warning
 
             if tool_calls:
+                log_response_to_db(response, messages_raw)
                 return JSONResponse(
                     content=format_tool_call_response(
                         tool_calls, model_name, response_id
                     ),
                     headers=base_headers if base_headers else None,
                 )
+
+            # Log response to database
+            log_response_to_db(response, messages_raw)
 
             # Regular text response
             return JSONResponse(
