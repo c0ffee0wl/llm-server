@@ -16,6 +16,7 @@ from ..adapters.openai_adapter import (
     parse_conversation,
     convert_tool_definitions,
     extract_tool_results,
+    ImageSizeError,
 )
 from ..adapters.tool_adapter import format_tool_call_response
 from ..adapters.model_adapters import get_adapter
@@ -100,7 +101,7 @@ class ChatCompletionRequest(BaseModel):
 
     @field_validator('messages')
     @classmethod
-    def validate_messages_not_empty(cls, v):
+    def validate_messages(cls, v):
         if not v:
             raise ValueError("messages list cannot be empty")
         return v
@@ -130,7 +131,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
     except ValueError as e:
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": str(e), "type": "invalid_request_error"}}
+            content={"error": {"message": str(e), "type": "invalid_request_error", "code": "model_not_found"}}
         )
 
     # Build base headers for responses
@@ -147,12 +148,17 @@ async def create_chat_completion(request: ChatCompletionRequest):
         conv_data = parse_conversation(messages_raw)
         if settings.debug:
             logger.debug(f"Conv data: system={bool(conv_data.system_prompt)}, history={len(conv_data.messages)}, prompt={bool(conv_data.current_prompt)}")
+    except ImageSizeError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error", "code": "image_too_large"}}
+        )
     except Exception as e:
         if settings.debug:
             logger.exception(f"Error parsing messages: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": f"Failed to parse messages: {e}", "type": "parse_error"}}
+            content={"error": {"message": f"Failed to parse messages: {e}", "type": "parse_error", "code": "parse_error"}}
         )
 
     # Convert tools to llm format (for future tool-using requests)
@@ -193,10 +199,15 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 elif msg.role == "assistant":
                     if msg.content:
                         history_parts.append(f"Assistant: {msg.content}")
-                    # Include tool calls in history for context
+                    # Include tool calls in history for context (with arguments)
                     if msg.tool_calls:
-                        tool_names = [tc.get("function", {}).get("name", "unknown") for tc in msg.tool_calls]
-                        history_parts.append(f"Assistant called tools: {', '.join(tool_names)}")
+                        tool_parts = []
+                        for tc in msg.tool_calls:
+                            func = tc.get("function", {})
+                            name = func.get("name", "unknown")
+                            args = func.get("arguments", "{}")
+                            tool_parts.append(f"{name}({args})")
+                        history_parts.append(f"Assistant called tools: {', '.join(tool_parts)}")
                 # Skip tool messages - they're passed via the tool_results parameter
             if history_parts:
                 full_prompt = "\n\n".join(history_parts) + "\n\n"
@@ -228,7 +239,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 logger.exception(f"Error calling model.prompt: {e}")
             return JSONResponse(
                 status_code=500,
-                content={"error": {"message": f"LLM error: {e}", "type": "llm_error"}}
+                content={"error": {"message": f"LLM error: {e}", "type": "llm_error", "code": "llm_error"}}
             )
 
         if request.stream:
@@ -265,7 +276,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             except asyncio.TimeoutError:
                 return JSONResponse(
                     status_code=504,
-                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error"}}
+                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error", "code": "timeout"}}
                 )
 
             # Check for tool calls
@@ -282,6 +293,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             except AttributeError:
                 pass  # Model doesn't support tool calls
             except Exception as e:
+                tool_call_warning = f"Error extracting tool calls: {type(e).__name__}"
                 if settings.debug:
                     logger.debug(f"Error getting tool calls: {e}")
 

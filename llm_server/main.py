@@ -44,7 +44,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         logger.exception(f"Error handling request to {request.url}: {exc}")
     return JSONResponse(
         status_code=500,
-        content={"error": {"message": str(exc), "type": type(exc).__name__}},
+        content={"error": {"message": str(exc), "type": type(exc).__name__, "code": "internal_error"}},
     )
 
 # Enable CORS for local development

@@ -76,7 +76,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
     except ValueError as e:
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": str(e), "type": "invalid_request_error"}}
+            content={"error": {"message": str(e), "type": "invalid_request_error", "code": "model_not_found"}}
         )
 
     # Build base headers for responses
@@ -95,7 +95,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
     if not prompt or not prompt.strip():
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": "Prompt cannot be empty", "type": "invalid_request_error"}}
+            content={"error": {"message": "Prompt cannot be empty", "type": "invalid_request_error", "code": "empty_prompt"}}
         )
 
     if settings.debug:
@@ -157,7 +157,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
             except asyncio.TimeoutError:
                 return JSONResponse(
                     status_code=504,
-                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error"}}
+                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error", "code": "timeout"}}
                 )
 
             return JSONResponse(
@@ -189,7 +189,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
             logger.debug(f"Completion validation error: {e}")
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": str(e), "type": "invalid_request_error"}}
+            content={"error": {"message": str(e), "type": "invalid_request_error", "code": "invalid_request"}}
         )
     except Exception as e:
         # Server errors
@@ -197,5 +197,5 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
             logger.exception(f"Completion error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": str(e), "type": "server_error"}}
+            content={"error": {"message": str(e), "type": "server_error", "code": "internal_error"}}
         )

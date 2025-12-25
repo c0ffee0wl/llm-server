@@ -202,8 +202,17 @@ def _extract_content_and_attachments(
     return "\n".join(text_parts), attachments
 
 
+class ImageSizeError(ValueError):
+    """Raised when an image exceeds the size limit."""
+    pass
+
+
 def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
-    """Create an llm Attachment from an image URL or base64 data."""
+    """Create an llm Attachment from an image URL or base64 data.
+
+    Raises:
+        ImageSizeError: If the image exceeds the size limit.
+    """
     if not url:
         return None
 
@@ -215,8 +224,9 @@ def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
             content = base64.b64decode(data)
             # Validate image size to prevent memory exhaustion
             if len(content) > MAX_IMAGE_SIZE:
-                logger.warning(f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE})")
-                return None
+                raise ImageSizeError(
+                    f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE} bytes / {MAX_IMAGE_SIZE // 1024 // 1024}MB)"
+                )
             return llm.Attachment(type=mime_type, content=content)
         except (ValueError, IndexError) as e:
             logger.debug(f"Failed to parse data URL: {e}")
@@ -236,8 +246,9 @@ def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
             content = base64.b64decode(url)
             # Validate image size to prevent memory exhaustion
             if len(content) > MAX_IMAGE_SIZE:
-                logger.warning(f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE})")
-                return None
+                raise ImageSizeError(
+                    f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE} bytes / {MAX_IMAGE_SIZE // 1024 // 1024}MB)"
+                )
             # Detect mime type from magic bytes
             mime_type = _detect_image_mime_type(content)
             if mime_type:
@@ -349,6 +360,7 @@ def extract_tool_results(
 
     # Second pass: extract tool results with guaranteed names
     results = []
+    fallback_counter = 0
     for msg in messages:
         role = _normalize_role(msg.get("role"))
         if role == "tool":
@@ -362,19 +374,14 @@ def extract_tool_results(
             if not name and tool_call_id:
                 name = tool_call_names.get(tool_call_id, "")
 
-            # 2. Try to extract from tool_call_id format: call_xxx_functionname
-            if not name and tool_call_id:
-                parts = tool_call_id.split("_", 2)
-                if len(parts) > 2:
-                    name = parts[2]
-
-            # 3. Use tool_call_id itself as name
+            # 2. Use tool_call_id itself as name
             if not name and tool_call_id:
                 name = tool_call_id
 
-            # 4. CRITICAL: Always provide a fallback name (Gemini requires non-empty)
+            # 3. CRITICAL: Always provide a unique fallback name (Gemini requires non-empty)
             if not name:
-                name = "tool_result"
+                fallback_counter += 1
+                name = f"tool_result_{fallback_counter}"
 
             results.append(
                 llm.ToolResult(
