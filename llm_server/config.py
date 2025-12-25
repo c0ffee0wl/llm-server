@@ -346,7 +346,8 @@ def log_response_to_db(response, messages: list[dict] = None):
         if messages:
             try:
                 response_text = response.text()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to get response text for conversation tracking: {e}")
                 response_text = ""
             conversation_tracker.store_conversation(messages, response_text, conv_id)
 

@@ -81,7 +81,7 @@ async def stream_llm_response(
                     )
                     future.result(timeout=QUEUE_PUT_TIMEOUT)
                     return True
-                except TimeoutError:
+                except FuturesTimeoutError:
                     # Queue full, check cancellation and retry
                     continue
                 except RuntimeError:
