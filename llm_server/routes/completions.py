@@ -14,7 +14,7 @@ import llm
 
 from ..adapters.model_adapters import get_adapter
 from ..config import settings, executor, get_model_with_fallback
-from ..streaming.sse import stream_llm_response
+from ..streaming.sse import stream_llm_response, format_sse_message
 
 logger = logging.getLogger(__name__)
 
@@ -26,27 +26,103 @@ def generate_completion_id() -> str:
     return f"cmpl-{uuid.uuid4().hex[:24]}"
 
 
+async def stream_with_echo_suffix(
+    base_stream,
+    prompt: str,
+    suffix: Optional[str],
+    echo: bool,
+    response_id: str,
+    model_id: str,
+    created_time: int,
+):
+    """
+    Wrap a streaming response to add echo/suffix support.
+
+    Args:
+        base_stream: The base SSE stream from stream_llm_response
+        prompt: The original prompt text
+        suffix: Text to append after completion (if any)
+        echo: Whether to include prompt in response
+        response_id: Unique response ID
+        model_id: Model identifier
+        created_time: Unix timestamp for the response
+    """
+    # Echo: send prompt as first chunk
+    if echo:
+        yield format_sse_message({
+            "id": response_id,
+            "object": "text_completion",
+            "created": created_time,
+            "model": model_id,
+            "choices": [{
+                "index": 0,
+                "text": prompt,
+                "logprobs": None,
+                "finish_reason": None,
+            }],
+        })
+
+    # Stream original response, buffering one chunk to inject suffix before finish_reason
+    # We need to detect the final message (with finish_reason) and inject suffix before it
+    pending_chunk = None
+    async for chunk in base_stream:
+        # Check if this chunk contains finish_reason (final content chunk)
+        is_final_content = 'finish_reason' in chunk and '"stop"' in chunk
+
+        if pending_chunk is not None:
+            yield pending_chunk
+
+        if is_final_content and suffix:
+            # Inject suffix before the final message
+            yield format_sse_message({
+                "id": response_id,
+                "object": "text_completion",
+                "created": created_time,
+                "model": model_id,
+                "choices": [{
+                    "index": 0,
+                    "text": suffix,
+                    "logprobs": None,
+                    "finish_reason": None,
+                }],
+            })
+            pending_chunk = None
+            yield chunk
+        elif chunk.strip() == "data: [DONE]":
+            # Yield [DONE] directly
+            pending_chunk = None
+            yield chunk
+        else:
+            pending_chunk = chunk
+
+    # Yield any remaining pending chunk
+    if pending_chunk is not None:
+        yield pending_chunk
+
+
 class CompletionRequest(BaseModel):
     """Request body for completions (legacy format).
 
+    Supported parameters:
+    - suffix: Text to append after the completion
+    - echo: If true, includes the prompt in the response
+
     Note: The following parameters are parsed for OpenAI API compatibility
     but are not currently implemented:
-    - suffix: Text to append after completion (not supported by llm library)
     - n: Number of completions (always returns 1)
     - stop: Stop sequences (not passed to llm library)
-    - echo: Include prompt in response (not implemented)
     """
 
     model: str = "gpt-4o-mini"
     prompt: Any  # Can be string or list of strings
-    suffix: Optional[str] = None  # Not implemented - parsed for API compatibility
+    suffix: Optional[str] = None  # Text to append after the completion
     max_tokens: Optional[int] = 256
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     n: int = 1  # Not implemented - always returns 1 completion
     stream: bool = False
     stop: Optional[Any] = None  # Not implemented - parsed for API compatibility
-    echo: bool = False  # Not implemented - parsed for API compatibility
+    echo: bool = False  # Include prompt in response
 
     class Config:
         extra = "allow"
@@ -133,15 +209,33 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                 "X-Request-ID": response_id,
                 **base_headers,
             }
-            return StreamingResponse(
-                stream_llm_response(
-                    response=response,
-                    executor=executor,
-                    model_id=actual_model_name,
+
+            base_stream = stream_llm_response(
+                response=response,
+                executor=executor,
+                model_id=actual_model_name,
+                response_id=response_id,
+                response_type="completion",
+                debug=settings.debug,
+            )
+
+            # Wrap stream if echo or suffix is requested
+            if request.echo or request.suffix:
+                created_time = int(time.time())
+                stream = stream_with_echo_suffix(
+                    base_stream=base_stream,
+                    prompt=prompt,
+                    suffix=request.suffix,
+                    echo=request.echo,
                     response_id=response_id,
-                    response_type="completion",
-                    debug=settings.debug,
-                ),
+                    model_id=actual_model_name,
+                    created_time=created_time,
+                )
+            else:
+                stream = base_stream
+
+            return StreamingResponse(
+                stream,
                 media_type="text/event-stream",
                 headers=stream_headers,
             )
@@ -159,6 +253,14 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                     status_code=504,
                     content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error", "code": "timeout"}}
                 )
+
+            # Apply echo: prepend prompt if requested
+            if request.echo:
+                full_text = prompt + full_text
+
+            # Apply suffix: append if provided
+            if request.suffix:
+                full_text = full_text + request.suffix
 
             return JSONResponse(
                 content={

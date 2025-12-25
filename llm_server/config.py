@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     logfile: Optional[str] = None
     max_workers: int = 10  # Thread pool size for concurrent LLM operations
     request_timeout: float = 300.0  # Timeout in seconds for LLM requests
+    cleanup_timeout: float = 5.0  # Seconds to wait for streaming thread cleanup
 
     class Config:
         env_prefix = "LLM_SERVER_"
@@ -84,20 +85,20 @@ def get_model_with_fallback(
     debug: bool = False,
 ) -> tuple:
     """
-    Get a model with fallback chain. Returns (model, model_name, was_fallback).
+    Ruft ein Modell mit Fallback-Kette ab. Gibt (Modell, Modellname, war_fallback) zurück.
 
-    Fallback order:
-    1. llm library's configured default (via `llm models default`)
-    2. Requested model name (if not in IGNORED_MODEL_NAMES)
-    3. Settings model_name
-    4. First available model
+    Fallback-Reihenfolge:
+    1. Das über die `llm models default`-Konfiguration der llm-Bibliothek festgelegte Standardmodell
+    2. Angefragter Modellname (falls nicht in IGNORED_MODEL_NAMES enthalten)
+    3. Modellname aus den Einstellungen (`settings.model_name`)
+    4. Erstes verfügbares Modell
 
-    Returns:
-        Tuple of (model, model_name, was_fallback) where was_fallback is True
-        if the returned model differs from the requested model.
+    Gibt zurück:
+        Ein Tupel aus (Modell, Modellname, war_fallback), wobei war_fallback True ist,
+        wenn das zurückgegebene Modell vom angefragten Modell abweicht.
 
-    Raises:
-        ValueError: If no model is available
+    Löst aus:
+        ValueError: Wenn kein Modell verfügbar ist
     """
     import logging
     import llm
