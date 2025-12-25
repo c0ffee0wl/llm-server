@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import llm
 
@@ -18,7 +18,8 @@ from ..adapters.openai_adapter import (
     extract_tool_results,
 )
 from ..adapters.tool_adapter import format_tool_call_response
-from ..config import settings, is_gemini_model, executor, get_model_with_fallback
+from ..adapters.model_adapters import get_adapter
+from ..config import settings, executor, get_model_with_fallback
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,13 @@ class ChatCompletionRequest(BaseModel):
     class Config:
         extra = "allow"
 
+    @field_validator('messages')
+    @classmethod
+    def validate_messages_not_empty(cls, v):
+        if not v:
+            raise ValueError("messages list cannot be empty")
+        return v
+
 
 @router.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
@@ -118,12 +126,18 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     # Get the model using shared fallback chain
     try:
-        model, model_name = get_model_with_fallback(request.model, settings.debug)
+        model, model_name, was_fallback = get_model_with_fallback(request.model, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
             content={"error": {"message": str(e), "type": "invalid_request_error"}}
         )
+
+    # Build base headers for responses
+    base_headers = {}
+    if was_fallback:
+        base_headers["X-Model-Fallback"] = "true"
+        base_headers["X-Requested-Model"] = request.model
 
     # Parse messages into structured conversation data
     try:
@@ -146,26 +160,31 @@ async def create_chat_completion(request: ChatCompletionRequest):
     llm_tools = convert_tool_definitions(tools_raw)
 
     # Extract tool results from messages (works for all models now - names are guaranteed non-empty)
-    is_gemini = is_gemini_model(model_name)
     tool_results = extract_tool_results(messages_raw)
     if settings.debug and tool_results:
         logger.debug(f"Extracted {len(tool_results)} tool results")
+
+    # Get adapter for model-specific behavior
+    adapter = get_adapter(model_name)
 
     # Build options - only include ones supported by the model
     options: Dict[str, Any] = {}
     if request.temperature is not None:
         options["temperature"] = request.temperature
-    # max_tokens is not supported by Gemini models (they use max_output_tokens internally)
-    if request.max_tokens is not None and not is_gemini:
+    if request.max_tokens is not None:
         options["max_tokens"] = request.max_tokens
     if request.top_p is not None:
         options["top_p"] = request.top_p
+
+    # Filter options through adapter (removes unsupported options like max_tokens for Gemini)
+    options = adapter.prepare_options(options)
 
     try:
         # Build the full prompt including conversation history
         full_prompt = ""
 
-        # Add conversation history as context (including tool interactions)
+        # Add conversation history as context
+        # Note: Tool messages are excluded here since they're passed via the tool_results parameter
         if conv_data.messages:
             history_parts = []
             for msg in conv_data.messages:
@@ -178,12 +197,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     if msg.tool_calls:
                         tool_names = [tc.get("function", {}).get("name", "unknown") for tc in msg.tool_calls]
                         history_parts.append(f"Assistant called tools: {', '.join(tool_names)}")
-                elif msg.role == "tool" and msg.content:
-                    # Include tool results in history
-                    tool_name = msg.name or "tool"
-                    # Truncate long tool results for context
-                    content_preview = msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
-                    history_parts.append(f"Tool result ({tool_name}): {content_preview}")
+                # Skip tool messages - they're passed via the tool_results parameter
             if history_parts:
                 full_prompt = "\n\n".join(history_parts) + "\n\n"
 
@@ -219,6 +233,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
         if request.stream:
             # Streaming response using shared SSE utilities
+            stream_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Request-ID": response_id,
+                "x-ms-client-request-id": response_id,
+                **base_headers,
+            }
             return StreamingResponse(
                 stream_llm_response(
                     response=response,
@@ -229,49 +251,50 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     debug=settings.debug,
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    "X-Request-ID": response_id,
-                    "x-ms-client-request-id": response_id,
-                },
+                headers=stream_headers,
             )
         else:
             # Non-streaming response - run blocking call in executor with timeout
             loop = asyncio.get_running_loop()
+            timeout = settings.request_timeout
             try:
                 full_text = await asyncio.wait_for(
                     loop.run_in_executor(executor, lambda: response.text()),
-                    timeout=300.0
+                    timeout=timeout
                 )
             except asyncio.TimeoutError:
                 return JSONResponse(
                     status_code=504,
-                    content={"error": {"message": "Request timed out after 300 seconds", "type": "timeout_error"}}
+                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error"}}
                 )
 
             # Check for tool calls
             tool_calls = None
+            tool_call_warning = None
             try:
                 tool_calls = await asyncio.wait_for(
                     loop.run_in_executor(executor, lambda: response.tool_calls()),
-                    timeout=30.0  # Shorter timeout for tool call extraction
+                    timeout=timeout
                 )
             except asyncio.TimeoutError:
-                if settings.debug:
-                    logger.debug("Timeout getting tool calls")
+                tool_call_warning = f"Timeout extracting tool calls after {timeout}s"
+                logger.warning(tool_call_warning)
             except AttributeError:
                 pass  # Model doesn't support tool calls
             except Exception as e:
                 if settings.debug:
                     logger.debug(f"Error getting tool calls: {e}")
 
+            # Add warning header if tool call extraction failed
+            if tool_call_warning:
+                base_headers["X-Tool-Call-Warning"] = tool_call_warning
+
             if tool_calls:
                 return JSONResponse(
                     content=format_tool_call_response(
                         tool_calls, model_name, response_id
-                    )
+                    ),
+                    headers=base_headers if base_headers else None,
                 )
 
             # Regular text response
@@ -297,7 +320,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
                         "total_tokens": (response.input_tokens or 0)
                         + (response.output_tokens or 0),
                     },
-                }
+                },
+                headers=base_headers if base_headers else None,
             )
 
     except Exception as e:

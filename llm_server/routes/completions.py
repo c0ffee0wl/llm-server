@@ -12,7 +12,8 @@ from pydantic import BaseModel
 
 import llm
 
-from ..config import settings, is_gemini_model, executor, get_model_with_fallback
+from ..adapters.model_adapters import get_adapter
+from ..config import settings, executor, get_model_with_fallback
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
@@ -71,12 +72,18 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
     # Get the model using shared fallback chain
     try:
         requested = engine_id or request.model
-        model, actual_model_name = get_model_with_fallback(requested, settings.debug)
+        model, actual_model_name, was_fallback = get_model_with_fallback(requested, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
             content={"error": {"message": str(e), "type": "invalid_request_error"}}
         )
+
+    # Build base headers for responses
+    base_headers = {}
+    if was_fallback:
+        base_headers["X-Model-Fallback"] = "true"
+        base_headers["X-Requested-Model"] = requested
 
     # Extract prompt
     if isinstance(request.prompt, list):
@@ -94,17 +101,20 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
     if settings.debug:
         logger.debug(f"Prompt length: {len(prompt)}")
 
+    # Get adapter for model-specific behavior
+    adapter = get_adapter(actual_model_name)
+
     # Build options
     options: Dict[str, Any] = {}
     if request.temperature is not None:
         options["temperature"] = request.temperature
     if request.top_p is not None:
         options["top_p"] = request.top_p
-
-    # max_tokens handling (skip for Gemini)
-    is_gemini = is_gemini_model(actual_model_name)
-    if request.max_tokens is not None and not is_gemini:
+    if request.max_tokens is not None:
         options["max_tokens"] = request.max_tokens
+
+    # Filter options through adapter (removes unsupported options like max_tokens for Gemini)
+    options = adapter.prepare_options(options)
 
     try:
         # Make the request
@@ -116,6 +126,13 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
 
         if request.stream:
             # Streaming response using shared SSE utilities
+            stream_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Request-ID": response_id,
+                **base_headers,
+            }
             return StreamingResponse(
                 stream_llm_response(
                     response=response,
@@ -126,25 +143,21 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                     debug=settings.debug,
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    "X-Request-ID": response_id,
-                },
+                headers=stream_headers,
             )
         else:
             # Non-streaming response - run blocking call in executor with timeout
             loop = asyncio.get_running_loop()
+            timeout = settings.request_timeout
             try:
                 full_text = await asyncio.wait_for(
                     loop.run_in_executor(executor, lambda: response.text()),
-                    timeout=300.0
+                    timeout=timeout
                 )
             except asyncio.TimeoutError:
                 return JSONResponse(
                     status_code=504,
-                    content={"error": {"message": "Request timed out after 300 seconds", "type": "timeout_error"}}
+                    content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error"}}
                 )
 
             return JSONResponse(
@@ -166,10 +179,20 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                         "completion_tokens": response.output_tokens or 0,
                         "total_tokens": (response.input_tokens or 0) + (response.output_tokens or 0),
                     },
-                }
+                },
+                headers=base_headers if base_headers else None,
             )
 
+    except ValueError as e:
+        # Client errors (invalid input)
+        if settings.debug:
+            logger.debug(f"Completion validation error: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error"}}
+        )
     except Exception as e:
+        # Server errors
         if settings.debug:
             logger.exception(f"Completion error: {e}")
         return JSONResponse(

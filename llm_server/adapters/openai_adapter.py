@@ -1,7 +1,9 @@
 """Adapter for converting between OpenAI chat format and llm library format."""
 
 import base64
+import binascii
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import llm
@@ -134,9 +136,9 @@ def parse_conversation(messages: List[Dict[str, Any]]) -> ConversationData:
             break
 
     if last_user_idx is not None:
-        # History includes only messages BEFORE the current user message
-        # Messages after it would be future responses, which shouldn't be in context
-        history_messages = parsed_messages[:last_user_idx]
+        # History includes messages both BEFORE and AFTER the current user message
+        # This preserves tool calling context (e.g., tool results that follow user messages)
+        history_messages = parsed_messages[:last_user_idx] + parsed_messages[last_user_idx+1:]
     else:
         # No user message found, use all as history
         history_messages = parsed_messages
@@ -242,7 +244,7 @@ def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
                 return llm.Attachment(type=mime_type, content=content)
             else:
                 logger.debug("Could not detect image MIME type from magic bytes")
-        except Exception as e:
+        except (ValueError, binascii.Error) as e:
             logger.debug(f"Failed to decode raw base64 image: {e}")
     return None
 
@@ -282,9 +284,13 @@ def convert_tool_definitions(tools: Optional[List[Dict[str, Any]]]) -> List[llm.
     for tool in tools:
         if tool.get("type") == "function":
             func = tool.get("function", {})
+            name = func.get("name", "")
+            if not name:
+                logger.warning("Skipping tool with empty name")
+                continue
             llm_tools.append(
                 llm.Tool(
-                    name=func.get("name", ""),
+                    name=name,
                     description=func.get("description", ""),
                     input_schema=func.get("parameters", {}),
                 )
@@ -297,13 +303,12 @@ def convert_tool_calls_to_openai(
 ) -> List[Dict[str, Any]]:
     """Convert llm ToolCall objects to OpenAI format."""
     result = []
-    for i, tc in enumerate(tool_calls):
+    for tc in tool_calls:
         func_name = tc.name if hasattr(tc, "name") else str(tc)
-        # Include function name in ID so extract_tool_results can recover it
-        # Format: call_{index}_{function_name}
+        # Use UUID for deterministic, unique IDs
         result.append(
             {
-                "id": f"call_{i}_{func_name}",
+                "id": f"call_{uuid.uuid4().hex[:24]}",
                 "type": "function",
                 "function": {
                     "name": func_name,

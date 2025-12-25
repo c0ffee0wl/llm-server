@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     pidfile: Optional[str] = None
     logfile: Optional[str] = None
     max_workers: int = 10  # Thread pool size for concurrent LLM operations
+    request_timeout: float = 300.0  # Timeout in seconds for LLM requests
 
     class Config:
         env_prefix = "LLM_SERVER_"
@@ -83,13 +84,17 @@ def get_model_with_fallback(
     debug: bool = False,
 ) -> tuple:
     """
-    Get a model with fallback chain. Returns (model, model_name).
+    Get a model with fallback chain. Returns (model, model_name, was_fallback).
 
     Fallback order:
     1. llm library's configured default (via `llm models default`)
     2. Requested model name (if not in IGNORED_MODEL_NAMES)
     3. Settings model_name
     4. First available model
+
+    Returns:
+        Tuple of (model, model_name, was_fallback) where was_fallback is True
+        if the returned model differs from the requested model.
 
     Raises:
         ValueError: If no model is available
@@ -104,7 +109,9 @@ def get_model_with_fallback(
         model = llm.get_model()
         if debug:
             logger.debug(f"Using llm default model: {model.model_id}")
-        return model, model.model_id
+        # It's a fallback if the default differs from requested
+        was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES and model.model_id != requested_model
+        return model, model.model_id, was_fallback
     except Exception as e:
         if debug:
             logger.debug(f"No default model configured: {e}")
@@ -115,7 +122,7 @@ def get_model_with_fallback(
             model = llm.get_model(requested_model)
             if debug:
                 logger.debug(f"Using requested model: {requested_model}")
-            return model, requested_model
+            return model, requested_model, False  # Not a fallback - using requested model
         except Exception as e:
             if debug:
                 logger.debug(f"Model '{requested_model}' not found: {e}")
@@ -126,7 +133,9 @@ def get_model_with_fallback(
             model = llm.get_model(settings.model_name)
             if debug:
                 logger.debug(f"Using settings model: {settings.model_name}")
-            return model, settings.model_name
+            # It's a fallback if settings model differs from requested
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, settings.model_name, was_fallback
         except Exception as e:
             if debug:
                 logger.debug(f"Settings model '{settings.model_name}' not found: {e}")
@@ -138,8 +147,30 @@ def get_model_with_fallback(
             model = available[0]
             if debug:
                 logger.debug(f"Using first available model: {model.model_id}")
-            return model, model.model_id
+            # It's a fallback if first available differs from requested
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, model.model_id, was_fallback
     except Exception as e:
         logger.warning(f"Failed to enumerate models: {e}")
 
     raise ValueError("No LLM models available. Configure with `llm models default <model>`.")
+
+
+def find_model_by_query(queries: list[str]):
+    """
+    Find a model matching the given query terms.
+
+    Args:
+        queries: List of search terms to match against model names/aliases
+
+    Returns:
+        Model instance or None if no match found
+    """
+    import llm
+
+    for model in llm.get_models():
+        model_id_lower = model.model_id.lower()
+        # Check if all query terms match the model id
+        if all(q.lower() in model_id_lower for q in queries):
+            return model
+    return None

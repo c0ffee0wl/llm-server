@@ -268,7 +268,7 @@ async def stream_llm_response(
         # Wait briefly for thread to finish (don't block indefinitely)
         if task_future is not None:
             try:
-                task_future.result(timeout=1.0)
+                task_future.result(timeout=3.0)
             except Exception:
                 pass  # Thread may have already finished or errored
 

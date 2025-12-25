@@ -122,9 +122,13 @@ def get_adapter(model_name: str) -> ModelAdapter:
     if "claude" in model_lower:
         return ClaudeAdapter()
 
-    # Local models (common patterns)
-    local_patterns = ["llama", "mistral", "ollama/", "local/", "gguf"]
-    if any(pattern in model_lower for pattern in local_patterns):
+    # Local models - use more specific patterns to avoid false positives
+    # Check for model prefixes or specific file extensions
+    local_prefixes = ["llama-", "llama2", "llama3", "mistral-", "mixtral", "ollama/", "local/"]
+    if any(model_lower.startswith(prefix) for prefix in local_prefixes):
+        return LocalModelAdapter()
+    # Check for GGUF file extension (local quantized models)
+    if model_lower.endswith(".gguf"):
         return LocalModelAdapter()
 
     # Default to OpenAI-compatible

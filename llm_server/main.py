@@ -147,19 +147,31 @@ def _daemonize(pidfile: str | None, logfile: str | None):
     sys.stdout.flush()
     sys.stderr.flush()
 
+    # Open and duplicate file descriptors, then close the originals
     devnull = open(os.devnull, "r+b")
     os.dup2(devnull.fileno(), sys.stdin.fileno())
 
     if logfile:
+        # Ensure log directory exists
+        logfile_dir = os.path.dirname(logfile)
+        if logfile_dir and not os.path.exists(logfile_dir):
+            os.makedirs(logfile_dir, exist_ok=True)
         log_fd = open(logfile, "a+")
         os.dup2(log_fd.fileno(), sys.stdout.fileno())
         os.dup2(log_fd.fileno(), sys.stderr.fileno())
+        log_fd.close()  # Close original after dup2
     else:
         os.dup2(devnull.fileno(), sys.stdout.fileno())
         os.dup2(devnull.fileno(), sys.stderr.fileno())
 
+    devnull.close()  # Close original after dup2
+
     # Write PID file
     if pidfile:
+        # Ensure PID file directory exists
+        pidfile_dir = os.path.dirname(pidfile)
+        if pidfile_dir and not os.path.exists(pidfile_dir):
+            os.makedirs(pidfile_dir, exist_ok=True)
         with open(pidfile, "w") as f:
             f.write(f"{os.getpid()}\n")
         atexit.register(_remove_pidfile, pidfile)
@@ -210,7 +222,7 @@ def run():
 
     if args.queries:
         # Use query-based model selection
-        from .routes.chat import find_model_by_query
+        from .config import find_model_by_query
         model = find_model_by_query(args.queries)
         if model:
             settings.model_name = model.model_id
