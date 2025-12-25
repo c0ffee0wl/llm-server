@@ -1,11 +1,9 @@
 """Chat completions endpoint - main LLM interaction point."""
 
 import asyncio
-import json
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -14,43 +12,18 @@ from pydantic import BaseModel
 
 import llm
 
-# Thread pool for blocking LLM operations
-_executor = ThreadPoolExecutor(max_workers=4)
-
 from ..adapters.openai_adapter import (
     parse_conversation,
     convert_tool_definitions,
     extract_tool_results,
 )
 from ..adapters.tool_adapter import format_tool_call_response
-from ..config import settings, is_gemini_model
+from ..config import settings, is_gemini_model, executor, get_model_with_fallback
+from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def find_model_by_query(queries: List[str]) -> Optional[llm.Model]:
-    """
-    Find model matching all query strings (like llm -q).
-
-    Multiple query terms are ANDed together.
-    Returns the model with the shortest ID among matches.
-    """
-    if not queries:
-        return None
-
-    matches = []
-    for model in llm.get_models():
-        model_id = model.model_id.lower()
-        if all(q.lower() in model_id for q in queries):
-            matches.append(model)
-
-    if not matches:
-        return None
-
-    # Return model with shortest ID (most specific match)
-    return min(matches, key=lambda m: len(m.model_id))
 
 
 def generate_response_id() -> str:
@@ -143,49 +116,13 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     response_id = generate_response_id()
 
-    # Get the model - respect llm library's default first
-    model = None
-    model_name = None
-
-    # 1. Try llm library's default model first (respects `llm models default`)
+    # Get the model using shared fallback chain
     try:
-        model = llm.get_model()  # Gets configured default from ~/.config/io.datasette.llm/default_model.txt
-        model_name = model.model_id
-        if settings.debug:
-            logger.debug(f"Using llm default model: {model_name}")
-    except Exception as e:
-        if settings.debug:
-            logger.debug(f"No default model configured: {e}")
-
-    # 2. If no default, try settings or request model
-    if model is None:
-        try_model = settings.model_name or request.model
-        if try_model and try_model != "local-llm":
-            try:
-                model = llm.get_model(try_model)
-                model_name = try_model
-                if settings.debug:
-                    logger.debug(f"Using requested/settings model: {model_name}")
-            except Exception as e:
-                if settings.debug:
-                    logger.debug(f"Model '{try_model}' not found: {e}")
-
-    # 3. Last resort: try to get any available model
-    if model is None:
-        try:
-            available = list(llm.get_models())
-            if available:
-                model = available[0]
-                model_name = model.model_id
-                if settings.debug:
-                    logger.debug(f"Using first available model: {model_name}")
-        except Exception as e:
-            logger.warning(f"Failed to enumerate models: {e}")
-
-    if model is None:
+        model, model_name = get_model_with_fallback(request.model, settings.debug)
+    except ValueError as e:
         return JSONResponse(
-            status_code=500,
-            content={"error": {"message": "No LLM models available. Please configure the llm library with `llm models default <model>`.", "type": "server_error"}}
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error"}}
         )
 
     # Parse messages into structured conversation data
@@ -267,7 +204,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 attachments=conv_data.current_attachments if conv_data.current_attachments else None,
                 tools=llm_tools if llm_tools else None,
                 tool_results=tool_results if tool_results else None,
-                stream=True,
+                stream=request.stream,
                 **options,
             )
             if settings.debug:
@@ -281,152 +218,49 @@ async def create_chat_completion(request: ChatCompletionRequest):
             )
 
         if request.stream:
-            # Streaming response - yield chunks as they arrive
-            # Capture variables for closure
-            _model_name = model_name
-            _response_id = response_id
-            _response = response
-            _debug = settings.debug
-
-            async def sse_generator():
-                created_time = int(time.time())
-                if _debug:
-                    logger.debug("Starting SSE generator")
-
-                # Use queue to bridge sync iteration to async
-                queue: asyncio.Queue = asyncio.Queue()
-                loop = asyncio.get_event_loop()
-
-                def iterate_sync():
-                    """Run sync iteration in thread, put chunks in queue."""
-                    try:
-                        for chunk in _response:
-                            loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
-                        # Signal completion with tool_calls if any
-                        tool_calls = None
-                        try:
-                            tool_calls = _response.tool_calls()
-                        except AttributeError:
-                            pass
-                        except Exception as e:
-                            if _debug:
-                                logger.debug(f"Error getting tool calls: {e}")
-                        loop.call_soon_threadsafe(queue.put_nowait, ("done", tool_calls))
-                    except Exception as e:
-                        loop.call_soon_threadsafe(queue.put_nowait, ("error", e))
-
-                # Start sync iteration in thread pool
-                _executor.submit(iterate_sync)
-
-                try:
-                    first_chunk = True
-
-                    while True:
-                        msg_type, data = await queue.get()
-
-                        if msg_type == "error":
-                            raise data
-
-                        if msg_type == "done":
-                            tool_calls = data
-                            break
-
-                        # msg_type == "chunk"
-                        text_chunk = data
-                        if _debug and text_chunk:
-                            logger.debug(f"Got chunk: {text_chunk[:50] if len(text_chunk) > 50 else text_chunk}...")
-                        if text_chunk:
-                            delta_content: Dict[str, Any] = {"content": text_chunk}
-                            if first_chunk:
-                                delta_content["role"] = "assistant"
-                                first_chunk = False
-
-                            chunk_msg = {
-                                "id": _response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": _model_name,
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": delta_content,
-                                        "finish_reason": None,
-                                    }
-                                ],
-                            }
-                            yield f"data: {json.dumps(chunk_msg)}\n\n"
-
-                    # Stream tool calls if present
-                    if tool_calls:
-                        from ..adapters.tool_adapter import format_streaming_tool_call_delta
-                        tool_delta = format_streaming_tool_call_delta(tool_calls, 0)
-                        if tool_delta:
-                            tool_msg = {
-                                "id": _response_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": _model_name,
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {"tool_calls": tool_delta},
-                                        "finish_reason": None,
-                                    }
-                                ],
-                            }
-                            yield f"data: {json.dumps(tool_msg)}\n\n"
-
-                    # Final message with finish_reason
-                    finish_reason = "tool_calls" if tool_calls else "stop"
-                    final_msg = {
-                        "id": _response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created_time,
-                        "model": _model_name,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": finish_reason,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(final_msg)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    if _debug:
-                        logger.debug("SSE generator completed successfully")
-
-                except Exception as e:
-                    if _debug:
-                        logger.exception(f"Error in SSE generator: {e}")
-                    error_msg = {
-                        "error": {
-                            "message": str(e),
-                            "type": "server_error",
-                        }
-                    }
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-
+            # Streaming response using shared SSE utilities
             return StreamingResponse(
-                sse_generator(),
+                stream_llm_response(
+                    response=response,
+                    executor=executor,
+                    model_id=model_name,
+                    response_id=response_id,
+                    response_type="chat",
+                    debug=settings.debug,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
-                    "X-Request-ID": _response_id,
-                    "x-ms-client-request-id": _response_id,
+                    "X-Request-ID": response_id,
+                    "x-ms-client-request-id": response_id,
                 },
             )
         else:
-            # Non-streaming response - run blocking call in executor
-            loop = asyncio.get_event_loop()
-            full_text = await loop.run_in_executor(_executor, response.text)
+            # Non-streaming response - run blocking call in executor with timeout
+            loop = asyncio.get_running_loop()
+            try:
+                full_text = await asyncio.wait_for(
+                    loop.run_in_executor(executor, lambda: response.text()),
+                    timeout=300.0
+                )
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": {"message": "Request timed out after 300 seconds", "type": "timeout_error"}}
+                )
 
             # Check for tool calls
             tool_calls = None
             try:
-                tool_calls = await loop.run_in_executor(_executor, response.tool_calls)
+                tool_calls = await asyncio.wait_for(
+                    loop.run_in_executor(executor, lambda: response.tool_calls()),
+                    timeout=30.0  # Shorter timeout for tool call extraction
+                )
+            except asyncio.TimeoutError:
+                if settings.debug:
+                    logger.debug("Timeout getting tool calls")
             except AttributeError:
                 pass  # Model doesn't support tool calls
             except Exception as e:

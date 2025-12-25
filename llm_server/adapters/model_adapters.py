@@ -3,6 +3,8 @@
 from typing import Any, Dict, List, Optional
 from abc import ABC, abstractmethod
 
+from ..config import is_gemini_model
+
 
 class ModelAdapter(ABC):
     """Base adapter for model-specific behavior."""
@@ -112,8 +114,8 @@ def get_adapter(model_name: str) -> ModelAdapter:
 
     model_lower = model_name.lower()
 
-    # Gemini/Vertex models
-    if model_lower.startswith("gemini/") or model_lower.startswith("vertex/"):
+    # Gemini/Vertex models - use centralized detection function
+    if is_gemini_model(model_name):
         return GeminiAdapter()
 
     # Claude models
@@ -127,10 +129,3 @@ def get_adapter(model_name: str) -> ModelAdapter:
 
     # Default to OpenAI-compatible
     return OpenAIAdapter()
-
-
-def is_gemini_model(model_name: str) -> bool:
-    """Check if the model is a Gemini/Vertex model."""
-    if not model_name:
-        return False
-    return model_name.startswith("gemini/") or model_name.startswith("vertex/")

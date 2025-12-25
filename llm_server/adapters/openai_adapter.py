@@ -1,9 +1,15 @@
 """Adapter for converting between OpenAI chat format and llm library format."""
 
 import base64
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import llm
+
+logger = logging.getLogger(__name__)
+
+# Maximum image size (20MB) to prevent memory exhaustion attacks
+MAX_IMAGE_SIZE = 20 * 1024 * 1024
 
 
 @dataclass
@@ -113,17 +119,24 @@ def parse_conversation(messages: List[Dict[str, Any]]) -> ConversationData:
             ))
 
     # The last user message is the current prompt
+    # All other messages (including those after it) become history
     current_prompt: Optional[str] = None
     current_attachments: List[llm.Attachment] = []
     history_messages: List[ParsedMessage] = []
+    last_user_idx: Optional[int] = None
 
     # Find last user message to use as current prompt
     for i in range(len(parsed_messages) - 1, -1, -1):
         if parsed_messages[i].role == "user":
+            last_user_idx = i
             current_prompt = parsed_messages[i].content
             current_attachments = parsed_messages[i].attachments
-            history_messages = parsed_messages[:i]
             break
+
+    if last_user_idx is not None:
+        # History includes only messages BEFORE the current user message
+        # Messages after it would be future responses, which shouldn't be in context
+        history_messages = parsed_messages[:last_user_idx]
     else:
         # No user message found, use all as history
         history_messages = parsed_messages
@@ -150,7 +163,13 @@ def _extract_text_content(content: Any) -> Optional[str]:
                     text_parts.append(part.get("text", ""))
                 elif part_type == "value" or "value" in part:
                     text_parts.append(part.get("value", ""))
+            else:
+                logger.debug(f"Skipping non-dict content part: {type(part)}")
+        if not text_parts:
+            logger.debug("No text content found in array")
         return "\n".join(text_parts) if text_parts else None
+    if content is not None:
+        logger.debug(f"Unexpected content type: {type(content)}")
     return None
 
 
@@ -192,8 +211,13 @@ def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
             header, data = url.split(",", 1)
             mime_type = header.split(":")[1].split(";")[0]
             content = base64.b64decode(data)
+            # Validate image size to prevent memory exhaustion
+            if len(content) > MAX_IMAGE_SIZE:
+                logger.warning(f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE})")
+                return None
             return llm.Attachment(type=mime_type, content=content)
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as e:
+            logger.debug(f"Failed to parse data URL: {e}")
             return None
     elif url.startswith("http://") or url.startswith("https://"):
         # URL-based image
@@ -208,18 +232,25 @@ def _create_image_attachment(url: str) -> Optional[llm.Attachment]:
         try:
             # Attempt to decode as base64
             content = base64.b64decode(url)
+            # Validate image size to prevent memory exhaustion
+            if len(content) > MAX_IMAGE_SIZE:
+                logger.warning(f"Image exceeds size limit: {len(content)} bytes (max {MAX_IMAGE_SIZE})")
+                return None
             # Detect mime type from magic bytes
             mime_type = _detect_image_mime_type(content)
             if mime_type:
                 return llm.Attachment(type=mime_type, content=content)
-        except Exception:
-            pass
+            else:
+                logger.debug("Could not detect image MIME type from magic bytes")
+        except Exception as e:
+            logger.debug(f"Failed to decode raw base64 image: {e}")
     return None
 
 
 def _detect_image_mime_type(data: bytes) -> Optional[str]:
     """Detect image MIME type from magic bytes."""
     if not data or len(data) < 8:
+        logger.debug(f"Data too short for MIME detection: {len(data) if data else 0} bytes")
         return None
 
     # PNG: \x89PNG\r\n\x1a\n
@@ -238,6 +269,7 @@ def _detect_image_mime_type(data: bytes) -> Optional[str]:
     if data[:2] == b'BM':
         return "image/bmp"
 
+    logger.debug(f"Unrecognized image magic bytes: {data[:8].hex()}")
     return None
 
 
@@ -266,12 +298,15 @@ def convert_tool_calls_to_openai(
     """Convert llm ToolCall objects to OpenAI format."""
     result = []
     for i, tc in enumerate(tool_calls):
+        func_name = tc.name if hasattr(tc, "name") else str(tc)
+        # Include function name in ID so extract_tool_results can recover it
+        # Format: call_{index}_{function_name}
         result.append(
             {
-                "id": f"call_{i}",
+                "id": f"call_{i}_{func_name}",
                 "type": "function",
                 "function": {
-                    "name": tc.name if hasattr(tc, "name") else str(tc),
+                    "name": func_name,
                     "arguments": (
                         tc.arguments
                         if hasattr(tc, "arguments")

@@ -1,11 +1,9 @@
 """Completions endpoint for code completion (inline suggestions)."""
 
 import asyncio
-import json
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -14,10 +12,8 @@ from pydantic import BaseModel
 
 import llm
 
-from ..config import settings, is_gemini_model
-
-# Thread pool for blocking LLM operations
-_executor = ThreadPoolExecutor(max_workers=4)
+from ..config import settings, is_gemini_model, executor, get_model_with_fallback
+from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -30,70 +26,29 @@ def generate_completion_id() -> str:
 
 
 class CompletionRequest(BaseModel):
-    """Request body for completions (legacy format)."""
+    """Request body for completions (legacy format).
+
+    Note: The following parameters are parsed for OpenAI API compatibility
+    but are not currently implemented:
+    - suffix: Text to append after completion (not supported by llm library)
+    - n: Number of completions (always returns 1)
+    - stop: Stop sequences (not passed to llm library)
+    - echo: Include prompt in response (not implemented)
+    """
 
     model: str = "gpt-4o-mini"
     prompt: Any  # Can be string or list of strings
-    suffix: Optional[str] = None
+    suffix: Optional[str] = None  # Not implemented - parsed for API compatibility
     max_tokens: Optional[int] = 256
     temperature: Optional[float] = None
     top_p: Optional[float] = None
-    n: int = 1
+    n: int = 1  # Not implemented - always returns 1 completion
     stream: bool = False
-    stop: Optional[Any] = None  # String or list of strings
-    echo: bool = False
+    stop: Optional[Any] = None  # Not implemented - parsed for API compatibility
+    echo: bool = False  # Not implemented - parsed for API compatibility
 
     class Config:
         extra = "allow"
-
-
-def get_model(model_name: str) -> tuple[llm.Model, str]:
-    """Get a model by name with fallbacks. Returns (model, model_name)."""
-    model = None
-
-    # 1. Try llm library's default model first
-    try:
-        model = llm.get_model()
-        actual_name = model.model_id
-        if settings.debug:
-            logger.debug(f"Using llm default model: {actual_name}")
-        return model, actual_name
-    except Exception as e:
-        if settings.debug:
-            logger.debug(f"No default model configured: {e}")
-
-    # 2. Try the requested model
-    if model_name and model_name not in ("gpt-41-copilot", "local-llm"):
-        try:
-            model = llm.get_model(model_name)
-            if settings.debug:
-                logger.debug(f"Using requested model: {model_name}")
-            return model, model_name
-        except Exception as e:
-            if settings.debug:
-                logger.debug(f"Model '{model_name}' not found: {e}")
-
-    # 3. Try settings model
-    if settings.model_name:
-        try:
-            model = llm.get_model(settings.model_name)
-            if settings.debug:
-                logger.debug(f"Using settings model: {settings.model_name}")
-            return model, settings.model_name
-        except Exception as e:
-            if settings.debug:
-                logger.debug(f"Settings model '{settings.model_name}' not found: {e}")
-
-    # 4. First available
-    try:
-        available = list(llm.get_models())
-        if available:
-            model = available[0]
-            return model, model.model_id
-    except Exception as e:
-        logger.warning(f"Failed to enumerate models: {e}")
-
-    raise ValueError("No LLM models available")
 
 
 @router.post("/v1/completions")
@@ -113,14 +68,14 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
 
     response_id = generate_completion_id()
 
-    # Get the model
+    # Get the model using shared fallback chain
     try:
-        model_name = engine_id or request.model
-        model, actual_model_name = get_model(model_name)
+        requested = engine_id or request.model
+        model, actual_model_name = get_model_with_fallback(requested, settings.debug)
     except ValueError as e:
         return JSONResponse(
-            status_code=500,
-            content={"error": {"message": str(e), "type": "server_error"}}
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error"}}
         )
 
     # Extract prompt
@@ -128,6 +83,13 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
         prompt = "\n".join(str(p) for p in request.prompt)
     else:
         prompt = str(request.prompt) if request.prompt else ""
+
+    # Validate prompt is not empty
+    if not prompt or not prompt.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "Prompt cannot be empty", "type": "invalid_request_error"}}
+        )
 
     if settings.debug:
         logger.debug(f"Prompt length: {len(prompt)}")
@@ -153,91 +115,16 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
         )
 
         if request.stream:
-            # Streaming response
-            _model_name = actual_model_name
-            _response_id = response_id
-            _response = response
-            _debug = settings.debug
-
-            async def sse_generator():
-                created_time = int(time.time())
-                if _debug:
-                    logger.debug("Starting completion SSE generator")
-
-                # Use queue to bridge sync iteration to async
-                queue: asyncio.Queue = asyncio.Queue()
-                loop = asyncio.get_event_loop()
-
-                def iterate_sync():
-                    """Run sync iteration in thread, put chunks in queue."""
-                    try:
-                        for chunk in _response:
-                            loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
-                        loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
-                    except Exception as e:
-                        loop.call_soon_threadsafe(queue.put_nowait, ("error", e))
-
-                # Start sync iteration in thread pool
-                _executor.submit(iterate_sync)
-
-                try:
-                    while True:
-                        msg_type, data = await queue.get()
-
-                        if msg_type == "error":
-                            raise data
-
-                        if msg_type == "done":
-                            break
-
-                        # msg_type == "chunk"
-                        text_chunk = data
-                        if text_chunk:
-                            chunk_msg = {
-                                "id": _response_id,
-                                "object": "text_completion",
-                                "created": created_time,
-                                "model": _model_name,
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "text": text_chunk,
-                                        "logprobs": None,
-                                        "finish_reason": None,
-                                    }
-                                ],
-                            }
-                            yield f"data: {json.dumps(chunk_msg)}\n\n"
-
-                    # Final message
-                    final_msg = {
-                        "id": _response_id,
-                        "object": "text_completion",
-                        "created": created_time,
-                        "model": _model_name,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "text": "",
-                                "logprobs": None,
-                                "finish_reason": "stop",
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(final_msg)}\n\n"
-                    yield "data: [DONE]\n\n"
-
-                    if _debug:
-                        logger.debug("Completion SSE generator completed")
-
-                except Exception as e:
-                    if _debug:
-                        logger.exception(f"Error in completion SSE: {e}")
-                    error_msg = {"error": {"message": str(e), "type": "server_error"}}
-                    yield f"data: {json.dumps(error_msg)}\n\n"
-
+            # Streaming response using shared SSE utilities
             return StreamingResponse(
-                sse_generator(),
+                stream_llm_response(
+                    response=response,
+                    executor=executor,
+                    model_id=actual_model_name,
+                    response_id=response_id,
+                    response_type="completion",
+                    debug=settings.debug,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -247,9 +134,18 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                 },
             )
         else:
-            # Non-streaming response - run blocking call in executor
-            loop = asyncio.get_event_loop()
-            full_text = await loop.run_in_executor(_executor, response.text)
+            # Non-streaming response - run blocking call in executor with timeout
+            loop = asyncio.get_running_loop()
+            try:
+                full_text = await asyncio.wait_for(
+                    loop.run_in_executor(executor, lambda: response.text()),
+                    timeout=300.0
+                )
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": {"message": "Request timed out after 300 seconds", "type": "timeout_error"}}
+                )
 
             return JSONResponse(
                 content={

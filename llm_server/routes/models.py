@@ -1,6 +1,7 @@
 """Models endpoint for listing available models."""
 
 import logging
+import threading
 import time
 from fastapi import APIRouter
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Model list cache with TTL
+# Model list cache with TTL and thread safety
 _model_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
+_cache_lock = threading.Lock()
 _CACHE_TTL = 3600.0  # Cache for 1 hour
 
 
@@ -57,52 +59,60 @@ def _model_to_openai_format(model: llm.Model) -> Dict[str, Any]:
 
 
 def get_model_list() -> List[Dict[str, Any]]:
-    """Return the list of available models from the llm library (cached)."""
+    """Return the list of available models from the llm library (cached, thread-safe)."""
     global _model_cache
 
-    # Check cache validity
+    # Fast path: check cache without lock
     if _model_cache is not None:
         cache_time, cached_models = _model_cache
         if time.time() - cache_time < _CACHE_TTL:
             return cached_models
 
-    try:
-        models = llm.get_models()
-        result = [_model_to_openai_format(m) for m in models]
-        _model_cache = (time.time(), result)
-        return result
-    except Exception as e:
-        logger.warning(f"Failed to enumerate models: {e}")
-        # Fallback to a default model if llm fails
-        return [
-            {
-                "id": "gpt-4o-mini",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "llm-library",
-                "permission": [],
-                "root": "gpt-4o-mini",
-                "parent": None,
-                "capabilities": {
-                    "type": "chat",
-                    "family": "gpt-4",
-                    "tokenizer": "cl100k_base",
-                    "limits": {
-                        "max_prompt_tokens": 128000,
-                        "max_output_tokens": 16384,
-                        "max_context_window_tokens": 128000,
+    # Slow path: acquire lock to update cache
+    with _cache_lock:
+        # Double-check after acquiring lock (another thread may have updated)
+        if _model_cache is not None:
+            cache_time, cached_models = _model_cache
+            if time.time() - cache_time < _CACHE_TTL:
+                return cached_models
+
+        try:
+            models = llm.get_models()
+            result = [_model_to_openai_format(m) for m in models]
+            _model_cache = (time.time(), result)
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to enumerate models: {e}")
+            # Fallback to a default model if llm fails
+            return [
+                {
+                    "id": "gpt-4o-mini",
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "llm-library",
+                    "permission": [],
+                    "root": "gpt-4o-mini",
+                    "parent": None,
+                    "capabilities": {
+                        "type": "chat",
+                        "family": "gpt-4",
+                        "tokenizer": "cl100k_base",
+                        "limits": {
+                            "max_prompt_tokens": 128000,
+                            "max_output_tokens": 16384,
+                            "max_context_window_tokens": 128000,
+                        },
+                        "supports": {
+                            "parallel_tool_calls": True,
+                            "tool_calls": True,
+                            "streaming": True,
+                            "vision": True,
+                            "prediction": False,
+                            "thinking": False,
+                        },
                     },
-                    "supports": {
-                        "parallel_tool_calls": True,
-                        "tool_calls": True,
-                        "streaming": True,
-                        "vision": True,
-                        "prediction": False,
-                        "thinking": False,
-                    },
-                },
-            }
-        ]
+                }
+            ]
 
 
 @router.get("/v1/models")
