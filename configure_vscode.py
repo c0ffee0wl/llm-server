@@ -203,29 +203,36 @@ def update_model_with_settings(model: Any, settings: Dict[str, Any]) -> None:
     if not hasattr(model, 'value') or not hasattr(model.value, 'key_value_pairs'):
         return
 
-    # Build a map of existing keys to their KeyValuePair objects
+    # Build a map of existing keys to their index in the list
     # Note: key.characters includes quotes, so we strip them for comparison
+    key_value_pairs = model.value.key_value_pairs
     existing_keys = {}
-    for kvp in model.value.key_value_pairs:
+    for idx, kvp in enumerate(key_value_pairs):
         if hasattr(kvp.key, 'characters'):
             # Strip surrounding quotes from the key string
             key_str = kvp.key.characters.strip('"\'')
         else:
             key_str = str(kvp.key).strip('"\'')
-        existing_keys[key_str] = kvp
+        existing_keys[key_str] = idx
 
     # Update existing keys and track new ones
     for key, value in settings.items():
         if key in existing_keys:
-            # Update existing value while preserving surrounding comments
-            existing_keys[key].value = modelize(value)
+            # KeyValuePair is a NamedTuple (immutable), so create a new one
+            idx = existing_keys[key]
+            old_kvp = key_value_pairs[idx]
+            new_kvp = KeyValuePair(
+                key=old_kvp.key,  # Preserve original key formatting
+                value=modelize(value),
+            )
+            key_value_pairs[idx] = new_kvp
         else:
             # Add new key-value pair at the end
             new_kvp = KeyValuePair(
                 key=modelize(key),
                 value=modelize(value),
             )
-            model.value.key_value_pairs.append(new_kvp)
+            key_value_pairs.append(new_kvp)
 
 
 def save_settings(path: Path, settings: Dict[str, Any], model: Any = None) -> bool:
