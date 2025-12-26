@@ -251,13 +251,15 @@ async def stream_llm_response(
         yield format_sse_message(final_msg)
         yield format_sse_done()
 
-        # Call completion callback (e.g., for database logging)
+        # Call completion callback in background thread to avoid blocking response flush
         if on_complete is not None:
-            try:
-                on_complete(response)
-            except Exception as e:
-                if debug:
-                    logger.debug(f"Error in on_complete callback: {e}")
+            def run_callback():
+                try:
+                    on_complete(response)
+                except Exception as e:
+                    if debug:
+                        logger.debug(f"Error in on_complete callback: {e}")
+            executor.submit(run_callback)
 
         if debug:
             logger.debug("SSE generator completed successfully")
