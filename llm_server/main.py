@@ -206,6 +206,10 @@ def run():
 
     args = parser.parse_args()
 
+    # -q and --service are mutually exclusive (use -m with --service instead)
+    if args.queries and args.service:
+        parser.error("-q/--query cannot be used with --service. Use -m/--model instead.")
+
     # Handle --service flag (install systemd service)
     if args.service:
         from .systemd_service import install_service

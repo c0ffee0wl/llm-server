@@ -10,7 +10,7 @@ from typing import Optional
 SOCKET_UNIT_TEMPLATE = """\
 [Unit]
 Description=LLM Server Socket
-Documentation=https://github.com/your-repo/llm-server
+Documentation=https://github.com/c0ffee0wl/llm-server
 
 [Socket]
 ListenStream={listen_address}
@@ -24,7 +24,7 @@ WantedBy=sockets.target
 SERVICE_UNIT_TEMPLATE = """\
 [Unit]
 Description=LLM Server - OpenAI-compatible wrapper for llm library
-Documentation=https://github.com/your-repo/llm-server
+Documentation=https://github.com/c0ffee0wl/llm-server
 Requires={socket_unit}
 After=network.target {socket_unit}
 

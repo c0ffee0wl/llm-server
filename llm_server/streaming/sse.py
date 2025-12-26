@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 CHUNK_TIMEOUT = 300.0
 # Timeout for queue operations in the background thread
 QUEUE_PUT_TIMEOUT = 5.0
+# Short timeout to detect end-of-stream (avoids waiting for model post-processing)
+END_OF_STREAM_TIMEOUT = 0.1
 
 
 def format_sse_message(data: Dict[str, Any]) -> str:
