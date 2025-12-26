@@ -188,12 +188,42 @@ def run():
     parser.add_argument('--port', type=int, default=None, help=f'Port to bind to (default: {settings.port})')
     parser.add_argument('-m', '--model', default=None, help='Default model to use')
     parser.add_argument('-q', '--query', action='append', dest='queries', help='Find model matching query (can be used multiple times)')
-    parser.add_argument('--daemon', action='store_true', help='Run as a background daemon')
+    parser.add_argument('-n', '--no-log', action='store_true', dest='no_log', help="Don't log requests/responses to database")
     parser.add_argument('--pidfile', default=None, help='PID file path (used with --daemon)')
     parser.add_argument('--logfile', default=None, help='Log file path (used with --daemon)')
-    parser.add_argument('-n', '--no-log', action='store_true', dest='no_log', help="Don't log requests/responses to database")
+
+    # Mutually exclusive daemon/service options
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('--daemon', action='store_true', help='Run as a background daemon')
+    mode_group.add_argument('--service', action='store_true',
+                           help='Install and start as a systemd socket-activated service')
+    mode_group.add_argument('--uninstall-service', action='store_true',
+                           help='Uninstall the systemd service')
+
+    # Service-specific options
+    parser.add_argument('--system', action='store_true',
+                       help='Install as system-level service (requires root, default is user-level)')
 
     args = parser.parse_args()
+
+    # Handle --service flag (install systemd service)
+    if args.service:
+        from .systemd_service import install_service
+        success = install_service(
+            host=args.host or settings.host,
+            port=args.port or settings.port,
+            model=args.model,
+            user_mode=not args.system,
+            debug=args.debug,
+            no_log=args.no_log,
+        )
+        sys.exit(0 if success else 1)
+
+    # Handle --uninstall-service flag
+    if args.uninstall_service:
+        from .systemd_service import uninstall_service
+        success = uninstall_service(user_mode=not args.system)
+        sys.exit(0 if success else 1)
 
     # Update settings from CLI args (before daemonization)
     if args.debug:

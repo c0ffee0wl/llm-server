@@ -11,7 +11,7 @@ Usage:
     python configure_vscode.py --restore  # Restore to default values
 
 Dependencies:
-    pip install json5  # For parsing JSONC (JSON with comments)
+    pip install 'llm-server[vscode]'  # For parsing JSONC with comment preservation
 """
 
 import argparse
@@ -22,7 +22,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 try:
-    import json5
+    from json5 import loads as json5_loads
+    from json5.loader import ModelLoader
+    from json5.dumper import dumps as json5_dumps, ModelDumper
     HAS_JSON5 = True
 except ImportError:
     HAS_JSON5 = False
@@ -73,6 +75,12 @@ LOCAL_LLM_SETTINGS = {
     "settingsSync.keybindingsPerPlatform": False,
     "workbench.editSessions.autoResume": "off",
     "workbench.editSessions.continueOn": "off",
+
+    # ========================================
+    # SHELL AND CHAT SETTINGS
+    # ========================================
+    "application.shellEnvironmentResolutionTimeout": 2,
+    "chat.notifyWindowOnResponseReceived": False,
 }
 
 # Default values for restore operation
@@ -94,6 +102,8 @@ DEFAULT_VALUES = {
     "settingsSync.keybindingsPerPlatform": True,
     "workbench.editSessions.autoResume": "onReload",
     "workbench.editSessions.continueOn": "prompt",
+    "application.shellEnvironmentResolutionTimeout": 10,  # VS Code default
+    "chat.notifyWindowOnResponseReceived": True,  # VS Code default
 }
 
 
@@ -140,69 +150,35 @@ def find_vscode_settings() -> list[tuple[str, Path]]:
     return found
 
 
-def load_settings(path: Path) -> Dict[str, Any]:
+def load_settings(path: Path) -> tuple[Dict[str, Any], Any]:
     """
     Load settings from JSON file, handling JSONC (JSON with comments).
 
-    Uses json5 library if available for proper JSONC parsing,
-    falls back to regex-based comment stripping otherwise.
+    Returns a tuple of (settings_dict, model_or_none).
+    The model is needed for comment-preserving saves with json-five.
     """
     if not path.exists():
-        return {}
+        return {}, None
 
     content = path.read_text(encoding="utf-8")
 
     if not content.strip():
-        return {}
+        return {}, None
 
-    # Use json5 if available (proper JSONC support)
-    if HAS_JSON5:
-        try:
-            return json5.loads(content)
-        except Exception as e:
-            print(f"Warning: Could not parse {path} with json5: {e}")
-            return {}
-
-    # Fallback: manual comment stripping (less robust)
-    import re
-
-    # Remove block comments /* ... */
-    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
-
-    # Remove single-line comments // ... (but not inside strings)
-    # This is a simplified approach - may fail on edge cases
-    lines = []
-    for line in content.split('\n'):
-        # Find // that's not inside a string (simplified check)
-        in_string = False
-        result = []
-        i = 0
-        while i < len(line):
-            char = line[i]
-            if char == '"' and (i == 0 or line[i-1] != '\\'):
-                in_string = not in_string
-                result.append(char)
-            elif char == '/' and i + 1 < len(line) and line[i+1] == '/' and not in_string:
-                break  # Rest of line is comment
-            else:
-                result.append(char)
-            i += 1
-        lines.append(''.join(result))
-
-    content = '\n'.join(lines)
-
-    # Remove trailing commas before } or ]
-    content = re.sub(r',(\s*[}\]])', r'\1', content)
-
-    if not content.strip():
-        return {}
+    if not HAS_JSON5:
+        print("Error: json-five is required. Install with:")
+        print("  pip install 'llm-server[vscode]'")
+        sys.exit(1)
 
     try:
-        return json.loads(content)
-    except json.JSONDecodeError as e:
+        # Load as dict for manipulation
+        settings_dict = json5_loads(content)
+        # Also load as model for round-trip comment preservation
+        model = json5_loads(content, loader=ModelLoader())
+        return settings_dict, model
+    except Exception as e:
         print(f"Warning: Could not parse {path}: {e}")
-        print("Hint: Install json5 for better JSONC support: pip install json5")
-        return {}
+        return {}, None
 
 
 def backup_settings(path: Path) -> Path | None:
@@ -225,12 +201,60 @@ def backup_settings(path: Path) -> Path | None:
         return None
 
 
-def save_settings(path: Path, settings: Dict[str, Any]) -> bool:
-    """Save settings to JSON file with proper formatting. Returns True on success."""
+def update_model_with_settings(model: Any, settings: Dict[str, Any]) -> None:
+    """
+    Update a json-five model with new settings values in-place.
+    Preserves existing comments and formatting.
+    """
+    from json5.model import KeyValuePair
+    from json5.dumper import modelize
+
+    if not hasattr(model, 'value') or not hasattr(model.value, 'key_value_pairs'):
+        return
+
+    # Build a map of existing keys to their KeyValuePair objects
+    # Note: key.characters includes quotes, so we strip them for comparison
+    existing_keys = {}
+    for kvp in model.value.key_value_pairs:
+        if hasattr(kvp.key, 'characters'):
+            # Strip surrounding quotes from the key string
+            key_str = kvp.key.characters.strip('"\'')
+        else:
+            key_str = str(kvp.key).strip('"\'')
+        existing_keys[key_str] = kvp
+
+    # Update existing keys and track new ones
+    for key, value in settings.items():
+        if key in existing_keys:
+            # Update existing value while preserving surrounding comments
+            existing_keys[key].value = modelize(value)
+        else:
+            # Add new key-value pair at the end
+            new_kvp = KeyValuePair(
+                key=modelize(key),
+                value=modelize(value),
+            )
+            model.value.key_value_pairs.append(new_kvp)
+
+
+def save_settings(path: Path, settings: Dict[str, Any], model: Any = None) -> bool:
+    """
+    Save settings to JSON file with proper formatting.
+    If model is provided and json-five is available, preserves comments.
+    Returns True on success.
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=4, ensure_ascii=False)
+            if model is not None and HAS_JSON5:
+                # Update the model with new settings and dump with comment preservation
+                update_model_with_settings(model, settings)
+                f.write(json5_dumps(model, dumper=ModelDumper()))
+            elif HAS_JSON5:
+                # No model, just dump as formatted JSON5
+                f.write(json5_dumps(settings, indent=4))
+            else:
+                json.dump(settings, f, indent=4, ensure_ascii=False)
         print(f"Settings saved to: {path}")
         return True
     except PermissionError:
@@ -324,7 +348,7 @@ Examples:
 
     args = parser.parse_args()
 
-    # Handle info-only commands first (no json5 needed)
+    # Handle info-only commands first (no json-five needed)
     if args.list:
         print("Settings configured for local LLM mode:\n")
         for key, value in LOCAL_LLM_SETTINGS.items():
@@ -344,10 +368,11 @@ Examples:
                 print(f"  {variant}: {get_vscode_config_path('user', variant)}")
         return
 
-    # Check for json5 (only needed when modifying settings)
+    # Check for json-five (required for modifying settings)
     if not HAS_JSON5:
-        print("Note: json5 not installed. Install for better JSONC support:")
-        print("  pip install json5\n")
+        print("Error: json-five is required. Install with:")
+        print("  pip install 'llm-server[vscode]'")
+        sys.exit(1)
 
     # Handle --all flag
     if args.all:
@@ -377,8 +402,8 @@ def configure_settings_file(settings_path: Path, args) -> bool:
     """Configure a single settings file. Returns True on success."""
     print(f"VS Code settings file: {settings_path}")
 
-    # Load current settings
-    current_settings = load_settings(settings_path)
+    # Load current settings (returns tuple with model for comment preservation)
+    current_settings, model = load_settings(settings_path)
 
     # Determine which settings to apply
     if args.restore:
@@ -398,7 +423,7 @@ def configure_settings_file(settings_path: Path, args) -> bool:
                 print("Aborting due to backup failure.")
                 return False
 
-        if save_settings(settings_path, updated):
+        if save_settings(settings_path, updated, model):
             print("\nDone! Restart VS Code for changes to take effect.")
             return True
         else:

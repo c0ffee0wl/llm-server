@@ -25,7 +25,10 @@ dev = [
     "httpx>=0.25.0",
 ]
 vscode = [
-    "json5>=0.9.0",  # For parsing VS Code JSONC settings
+    "json-five>=1.1.1",  # For parsing/writing VS Code JSONC settings with round-trip comment preservation
+]
+service = [
+    "pystemd>=0.10.0",  # For systemd service management
 ]
 
 [project.scripts]

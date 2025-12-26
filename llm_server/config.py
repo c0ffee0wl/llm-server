@@ -12,6 +12,55 @@ import llm
 import sqlite_utils
 from llm.migrations import migrate
 
+# Model-specific context limits (input tokens)
+# Based on provider documentation as of 2025-12
+MODEL_CONTEXT_LIMITS = {
+    # Azure OpenAI / OpenAI - GPT-4.1 series (1M context)
+    "gpt-4.1": 1000000,
+    "gpt-4.1-mini": 1000000,
+    "gpt-4.1-nano": 1000000,
+
+    # Azure OpenAI / OpenAI - GPT-4o series (128k context)
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+
+    # Azure OpenAI / OpenAI - GPT-5 series (272k context)
+    "gpt-5": 270000,
+    "gpt-5-mini": 270000,
+    "gpt-5-nano": 270000,
+    "gpt-5-chat": 110000,
+    "gpt-5.1": 270000,
+    "gpt-5.1-chat": 110000,
+    "gpt-5.1-codex": 270000,
+    "gpt-5.1-codex-mini": 270000,
+    "gpt-5.1-codex-max": 270000,
+    "gpt-5.2": 270000,
+    "gpt-5.2-chat": 110000,
+
+    # Azure OpenAI / OpenAI - Reasoning models (o-series)
+    "o1": 200000,
+    "o1-preview": 128000,
+    "o1-mini": 128000,
+    "o3": 200000,
+    "o3-mini": 200000,
+    "o3-pro": 200000,
+    "o4-mini": 200000,
+    "codex-mini": 200000,
+}
+
+# Default limits by provider prefix (fallback when model not in explicit list)
+# Gemini/Vertex models have 1M, Claude models have 200k
+PROVIDER_DEFAULT_LIMITS = {
+    "azure/": 200000,       # Conservative default for unknown Azure models
+    "vertex/": 1000000,     # Vertex models have 1M
+    "gemini-": 1000000,     # Gemini models have 1M
+    "claude-": 200000,      # Claude models have 200k (1M beta requires special header)
+    "openai/": 128000,      # Conservative for unknown OpenAI models
+}
+
+# Absolute fallback
+DEFAULT_CONTEXT_LIMIT = 200000
+
 
 class Settings(BaseSettings):
     """Server configuration settings."""
@@ -304,6 +353,36 @@ def find_model_by_query(queries: list[str]):
         if all(q.lower() in model_id_lower for q in queries):
             return model
     return None
+
+
+def get_model_context_limit(model_name: str) -> int:
+    """
+    Get the context limit (max input tokens) for a model.
+
+    Checks in order:
+    1. Explicit MODEL_CONTEXT_LIMITS mapping
+    2. PROVIDER_DEFAULT_LIMITS by prefix
+    3. DEFAULT_CONTEXT_LIMIT fallback
+
+    Args:
+        model_name: The model identifier (e.g., "gpt-4o", "gemini-1.5-pro")
+
+    Returns:
+        Maximum input token count for the model
+    """
+    if not model_name:
+        return DEFAULT_CONTEXT_LIMIT
+
+    # Check explicit model mapping first
+    if model_name in MODEL_CONTEXT_LIMITS:
+        return MODEL_CONTEXT_LIMITS[model_name]
+
+    # Check provider prefix defaults
+    for prefix, limit in PROVIDER_DEFAULT_LIMITS.items():
+        if model_name.startswith(prefix):
+            return limit
+
+    return DEFAULT_CONTEXT_LIMIT
 
 
 def log_response_to_db(response, messages: list[dict] = None):
