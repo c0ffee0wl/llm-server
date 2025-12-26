@@ -17,18 +17,14 @@ dependencies = [
     "llm>=0.19.0",
     "llm-vertex",
     "llm-gemini",
+    "json-five>=1.1.1",  # For parsing/writing VS Code JSONC settings with round-trip comment preservation
+    "pystemd>=0.10.0",  # For systemd service management
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "httpx>=0.25.0",
-]
-vscode = [
-    "json-five>=1.1.1",  # For parsing/writing VS Code JSONC settings with round-trip comment preservation
-]
-service = [
-    "pystemd>=0.10.0",  # For systemd service management
 ]
 
 [project.scripts]

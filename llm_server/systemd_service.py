@@ -126,13 +126,8 @@ def install_service(
 
     Returns True on success, False on failure.
     """
-    try:
-        from pystemd.systemd1 import Manager
-        from pystemd.dbuslib import DBus
-    except ImportError:
-        print("Error: pystemd is required for --service. Install with:")
-        print("  pip install 'llm-server[service]'")
-        return False
+    from pystemd.systemd1 import Manager
+    from pystemd.dbuslib import DBus
 
     service_name = get_service_name()
     socket_unit_name = f"{service_name}.socket"
@@ -217,13 +212,8 @@ def uninstall_service(user_mode: bool = True) -> bool:
 
     Returns True on success, False on failure.
     """
-    try:
-        from pystemd.systemd1 import Manager
-        from pystemd.dbuslib import DBus
-    except ImportError:
-        print("Error: pystemd is required. Install with:")
-        print("  pip install 'llm-server[service]'")
-        return False
+    from pystemd.systemd1 import Manager
+    from pystemd.dbuslib import DBus
 
     service_name = get_service_name()
     socket_unit_name = f"{service_name}.socket"

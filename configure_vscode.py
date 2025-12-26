@@ -11,7 +11,7 @@ Usage:
     python configure_vscode.py --restore  # Restore to default values
 
 Dependencies:
-    pip install 'llm-server[vscode]'  # For parsing JSONC with comment preservation
+    pip install llm-server  # json-five is included for parsing JSONC with comment preservation
 """
 
 import argparse
@@ -21,13 +21,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-try:
-    from json5 import loads as json5_loads
-    from json5.loader import ModelLoader
-    from json5.dumper import dumps as json5_dumps, ModelDumper
-    HAS_JSON5 = True
-except ImportError:
-    HAS_JSON5 = False
+from json5 import loads as json5_loads
+from json5.loader import ModelLoader
+from json5.dumper import dumps as json5_dumps, ModelDumper
 
 
 # Settings to configure for local LLM mode
@@ -165,11 +161,6 @@ def load_settings(path: Path) -> tuple[Dict[str, Any], Any]:
     if not content.strip():
         return {}, None
 
-    if not HAS_JSON5:
-        print("Error: json-five is required. Install with:")
-        print("  pip install 'llm-server[vscode]'")
-        sys.exit(1)
-
     try:
         # Load as dict for manipulation
         settings_dict = json5_loads(content)
@@ -240,21 +231,19 @@ def update_model_with_settings(model: Any, settings: Dict[str, Any]) -> None:
 def save_settings(path: Path, settings: Dict[str, Any], model: Any = None) -> bool:
     """
     Save settings to JSON file with proper formatting.
-    If model is provided and json-five is available, preserves comments.
+    If model is provided, preserves comments using json-five.
     Returns True on success.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            if model is not None and HAS_JSON5:
+            if model is not None:
                 # Update the model with new settings and dump with comment preservation
                 update_model_with_settings(model, settings)
                 f.write(json5_dumps(model, dumper=ModelDumper()))
-            elif HAS_JSON5:
+            else:
                 # No model, just dump as formatted JSON5
                 f.write(json5_dumps(settings, indent=4))
-            else:
-                json.dump(settings, f, indent=4, ensure_ascii=False)
         print(f"Settings saved to: {path}")
         return True
     except PermissionError:
@@ -367,12 +356,6 @@ Examples:
             for variant in ["code", "code-insiders", "codium", "code-oss"]:
                 print(f"  {variant}: {get_vscode_config_path('user', variant)}")
         return
-
-    # Check for json-five (required for modifying settings)
-    if not HAS_JSON5:
-        print("Error: json-five is required. Install with:")
-        print("  pip install 'llm-server[vscode]'")
-        sys.exit(1)
 
     # Handle --all flag
     if args.all:
