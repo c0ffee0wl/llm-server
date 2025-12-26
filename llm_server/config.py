@@ -74,7 +74,6 @@ class Settings(BaseSettings):
     no_log: bool = False  # Disable database logging of requests/responses
     max_workers: int = 10  # Thread pool size for concurrent LLM operations
     request_timeout: float = 300.0  # Timeout in seconds for LLM requests
-    cleanup_timeout: float = 5.0  # Seconds to wait for streaming thread cleanup
 
     class Config:
         env_prefix = "LLM_SERVER_"

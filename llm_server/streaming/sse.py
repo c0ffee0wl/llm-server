@@ -8,7 +8,6 @@ import time
 from concurrent.futures import Executor, Future, TimeoutError as FuturesTimeoutError
 from typing import Any, AsyncIterator, Dict, Optional
 
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -279,21 +278,10 @@ async def stream_llm_response(
         yield format_sse_done()
 
     finally:
-        # Signal the background thread to stop
+        # Signal the background thread to stop - it will complete in background
+        # Note: We don't wait for the thread to finish to avoid delaying the
+        # response completion. The ThreadPoolExecutor will manage cleanup.
         cancel_event.set()
-
-        # Wait for thread to finish with configurable timeout
-        if task_future is not None:
-            try:
-                task_future.result(timeout=settings.cleanup_timeout)
-            except FuturesTimeoutError:
-                logger.warning(
-                    f"Streaming thread did not finish within {settings.cleanup_timeout}s - "
-                    "it will complete in background"
-                )
-            except Exception as e:
-                if debug:
-                    logger.debug(f"Thread cleanup exception: {e}")
 
         if debug:
             logger.debug("SSE generator cleanup complete")
