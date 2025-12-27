@@ -17,6 +17,8 @@ dependencies = [
     "llm>=0.19.0",
     "llm-vertex",
     "llm-gemini",
+    "llm-openrouter",
+    "llm-anthropic",
     "json-five>=1.1.1",  # For parsing/writing VS Code JSONC settings with round-trip comment preservation
     "pystemd>=0.10.0",  # For systemd service management
 ]

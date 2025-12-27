@@ -1,6 +1,7 @@
 """Completions endpoint for code completion (inline suggestions)."""
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -66,8 +67,16 @@ async def stream_with_echo_suffix(
     # We need to detect the final message (with finish_reason) and inject suffix before it
     pending_chunk = None
     async for chunk in base_stream:
-        # Check if this chunk contains finish_reason (final content chunk)
-        is_final_content = 'finish_reason' in chunk and '"stop"' in chunk
+        # Check if this chunk contains finish_reason="stop" (final content chunk)
+        is_final_content = False
+        if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+            try:
+                chunk_data = json.loads(chunk[6:].strip())
+                choices = chunk_data.get("choices", [])
+                if choices and choices[0].get("finish_reason") == "stop":
+                    is_final_content = True
+            except (json.JSONDecodeError, IndexError, KeyError, TypeError, AttributeError):
+                pass
 
         if pending_chunk is not None:
             yield pending_chunk
