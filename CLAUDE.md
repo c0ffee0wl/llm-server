@@ -10,7 +10,7 @@ LLM Server is an OpenAI-compatible HTTP API wrapper for the `llm` library. It al
 
 ```bash
 # Run the server (development)
-llm-server --debug --host 127.0.0.1 --port 8777
+llm-server --debug --host 127.0.0.1 --port 11435
 
 # Run with a specific model
 llm-server -m gemini-1.5-pro
@@ -77,7 +77,7 @@ The `is_gemini_model()` function checks for `gemini/`, `gemini-`, and `vertex/` 
 
 ### Environment Variables
 
-- `LLM_SERVER_HOST` / `LLM_SERVER_PORT` - Bind address (default: 127.0.0.1:8777)
+- `LLM_SERVER_HOST` / `LLM_SERVER_PORT` - Bind address (default: 127.0.0.1:11435)
 - `LLM_SERVER_MODEL_NAME` - Default model
 - `LLM_SERVER_DEBUG` - Enable debug logging
 - `LLM_SERVER_NO_LOG` - Disable database logging

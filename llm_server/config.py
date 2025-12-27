@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     """Server configuration settings."""
 
     host: str = "127.0.0.1"
-    port: int = 8777
+    port: int = 11435
     model_name: Optional[str] = None  # None = use llm library default (gpt-4o-mini)
     debug: bool = False
     pidfile: Optional[str] = None
