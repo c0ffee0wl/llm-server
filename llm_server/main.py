@@ -76,6 +76,7 @@ async def root():
         "version": "0.1.0",
         "endpoints": {
             "chat_completions": "/v1/chat/completions",
+            "completions": "/v1/completions",
             "models": "/v1/models",
             "health": "/health",
         },
