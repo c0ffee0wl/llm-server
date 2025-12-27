@@ -20,7 +20,7 @@ from ..adapters.openai_adapter import (
 )
 from ..adapters.tool_adapter import format_tool_call_response
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, executor, get_model_with_fallback, log_response_to_db, conversation_tracker
+from ..config import settings, get_async_model_with_fallback, log_response_to_db, conversation_tracker
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
@@ -125,9 +125,9 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     response_id = generate_response_id()
 
-    # Get the model using shared fallback chain
+    # Get the async model using shared fallback chain
     try:
-        model, model_name, was_fallback = get_model_with_fallback(request.model, settings.debug)
+        model, model_name, was_fallback = get_async_model_with_fallback(request.model, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
@@ -243,7 +243,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             )
 
         if request.stream:
-            # Streaming response using shared SSE utilities
+            # Streaming response using native async SSE
             stream_headers = {
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
@@ -259,7 +259,6 @@ async def create_chat_completion(request: ChatCompletionRequest):
             return StreamingResponse(
                 stream_llm_response(
                     response=response,
-                    executor=executor,
                     model_id=model_name,
                     response_id=response_id,
                     response_type="chat",
@@ -270,12 +269,11 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 headers=stream_headers,
             )
         else:
-            # Non-streaming response - run blocking call in executor with timeout
-            loop = asyncio.get_running_loop()
+            # Non-streaming response - native async with timeout
             timeout = settings.request_timeout
             try:
                 full_text = await asyncio.wait_for(
-                    loop.run_in_executor(executor, lambda: response.text()),
+                    response.text(),
                     timeout=timeout
                 )
             except asyncio.TimeoutError:
@@ -284,12 +282,12 @@ async def create_chat_completion(request: ChatCompletionRequest):
                     content={"error": {"message": f"Request timed out after {timeout} seconds", "type": "timeout_error", "code": "timeout"}}
                 )
 
-            # Check for tool calls
+            # Check for tool calls (native async)
             tool_calls = None
             tool_call_warning = None
             try:
                 tool_calls = await asyncio.wait_for(
-                    loop.run_in_executor(executor, lambda: response.tool_calls()),
+                    response.tool_calls(),
                     timeout=timeout
                 )
             except asyncio.TimeoutError:

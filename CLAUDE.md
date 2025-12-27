@@ -42,10 +42,10 @@ configure-vscode --user
 ### Request Flow
 
 ```
-OpenAI Client → FastAPI Endpoint → Adapter Layer → llm Library → LLM Provider
+OpenAI Client → FastAPI Endpoint → Adapter Layer → llm Library (async) → LLM Provider
                      ↓
-              Streaming: SSE via queue-based async/sync bridge
-              Non-streaming: ThreadPoolExecutor with timeout
+              Streaming: Native async iteration with SSE
+              Non-streaming: Native async with timeout
 ```
 
 ### Key Components
@@ -61,15 +61,15 @@ OpenAI Client → FastAPI Endpoint → Adapter Layer → llm Library → LLM Pro
 - `tool_adapter.py` - Formats tool call responses for OpenAI compatibility
 
 **Streaming (`llm_server/streaming/sse.py`):**
-- Bridges synchronous llm library iteration to async FastAPI streaming
-- Uses asyncio.Queue with background thread for backpressure handling
-- 300s chunk timeout, cancellation via threading.Event
+- Uses native async iteration from the llm library's AsyncResponse
+- Formats chunks as Server-Sent Events for OpenAI API compatibility
+- Handles tool calls at stream completion
 
 **Config (`llm_server/config.py`):**
 - `Settings` class with `LLM_SERVER_*` environment variable prefix
-- `get_model_with_fallback()` - 4-tier model fallback chain: llm default → requested → settings → first available
+- `get_async_model_with_fallback()` - 4-tier async model fallback chain: llm default → requested → settings → first available
 - `ConversationTracker` - Hash-based conversation grouping for database logging
-- Lazy-initialized `ThreadPoolExecutor` with atexit cleanup
+- `log_response_to_db()` - Handles both sync Response and async AsyncResponse objects
 
 ### Model Detection
 
@@ -82,7 +82,6 @@ The `is_gemini_model()` function checks for `gemini/`, `gemini-`, and `vertex/` 
 - `LLM_SERVER_DEBUG` - Enable debug logging
 - `LLM_SERVER_NO_LOG` - Disable database logging
 - `LLM_SERVER_REQUEST_TIMEOUT` - Request timeout in seconds (default: 300)
-- `LLM_SERVER_MAX_WORKERS` - Thread pool size (default: 10)
 
 ### Database Logging
 

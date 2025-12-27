@@ -1,22 +1,17 @@
 """Server-Sent Events utilities for streaming responses."""
 
-import asyncio
 import json
 import logging
-import threading
 import time
-from concurrent.futures import Executor, Future, TimeoutError as FuturesTimeoutError
 from typing import Any, AsyncIterator, Dict, Optional
+
+from llm import AsyncResponse
 
 
 logger = logging.getLogger(__name__)
 
 # Timeout for waiting on chunks (5 minutes to allow for slow models)
 CHUNK_TIMEOUT = 300.0
-# Timeout for queue operations in the background thread
-QUEUE_PUT_TIMEOUT = 5.0
-# Short timeout to detect end-of-stream (avoids waiting for model post-processing)
-END_OF_STREAM_TIMEOUT = 0.1
 
 
 def format_sse_message(data: Dict[str, Any]) -> str:
@@ -30,8 +25,7 @@ def format_sse_done() -> str:
 
 
 async def stream_llm_response(
-    response: Any,
-    executor: Executor,
+    response: AsyncResponse,
     model_id: str,
     response_id: str,
     response_type: str = "chat",
@@ -41,12 +35,11 @@ async def stream_llm_response(
     """
     Stream an LLM response using Server-Sent Events.
 
-    Bridges the synchronous llm library iteration to async streaming
-    using a queue and thread pool executor.
+    Uses native async iteration from the llm library's AsyncResponse,
+    eliminating the need for thread pool bridging.
 
     Args:
-        response: The llm library response object (iterable)
-        executor: ThreadPoolExecutor for running sync operations
+        response: The llm library AsyncResponse object (async iterable)
         model_id: The model ID to include in response chunks
         response_id: Unique response ID for this stream
         response_type: Either "chat" for chat completions or "completion" for text completions
@@ -61,99 +54,17 @@ async def stream_llm_response(
     if debug:
         logger.debug(f"Starting SSE generator for {response_type}")
 
-    # Use queue with maxsize to provide backpressure when client is slow
-    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
-    loop = asyncio.get_running_loop()
-
-    # Cancellation signal for the background thread
-    cancel_event = threading.Event()
-
-    # Track the background task future
-    task_future: Optional[Future] = None
-
-    def iterate_sync():
-        """Run sync iteration in thread, put chunks in queue."""
-        def safe_queue_put(item):
-            """Thread-safe queue put with cancellation and event loop checks."""
-            while not cancel_event.is_set():
-                try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        queue.put(item), loop
-                    )
-                    future.result(timeout=QUEUE_PUT_TIMEOUT)
-                    return True
-                except FuturesTimeoutError:
-                    # Queue full, check cancellation and retry
-                    continue
-                except RuntimeError:
-                    # Event loop is closed (client disconnected)
-                    return False
-                except Exception:
-                    # Other error (loop closed, etc.)
-                    return False
-            return False
-
-        try:
-            for chunk in response:
-                # Check cancellation and put chunk atomically
-                if cancel_event.is_set():
-                    if debug:
-                        logger.debug("Background iteration cancelled")
-                    return
-
-                if not safe_queue_put(("chunk", chunk)):
-                    return
-
-            # Signal completion with tool_calls if any (chat completions only)
-            tool_calls = None
-            if response_type == "chat":
-                try:
-                    tool_calls = response.tool_calls()
-                except AttributeError:
-                    pass
-                except Exception as e:
-                    if debug:
-                        logger.debug(f"Error getting tool calls: {e}")
-
-            if not cancel_event.is_set():
-                safe_queue_put(("done", tool_calls))
-
-        except Exception as e:
-            if not cancel_event.is_set():
-                safe_queue_put(("error", e))
-
-    # Start sync iteration in thread pool and track the future
-    task_future = executor.submit(iterate_sync)
-
     try:
         first_chunk = True
 
-        while True:
-            try:
-                msg_type, data = await asyncio.wait_for(
-                    queue.get(), timeout=CHUNK_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                raise TimeoutError(
-                    f"LLM response timed out after {CHUNK_TIMEOUT} seconds"
-                )
-
-            if msg_type == "error":
-                raise data
-
-            if msg_type == "done":
-                tool_calls = data
-                break
-
-            # msg_type == "chunk"
-            text_chunk = data
+        # Native async iteration - no thread pool bridging needed
+        async for text_chunk in response:
             if debug and text_chunk:
                 preview = text_chunk[:50] if len(text_chunk) > 50 else text_chunk
                 logger.debug(f"Got chunk: {preview}...")
 
             if response_type == "chat":
                 # Chat completion chunk format
-                # Always include role on first chunk, even if content is empty
                 delta_content: Dict[str, Any] = {}
                 if text_chunk:
                     delta_content["content"] = text_chunk
@@ -197,6 +108,16 @@ async def stream_llm_response(
                     yield format_sse_message(chunk_msg)
 
         # Handle tool calls at the end (chat completions only)
+        tool_calls = None
+        if response_type == "chat":
+            try:
+                tool_calls = await response.tool_calls()
+            except AttributeError:
+                pass
+            except Exception as e:
+                if debug:
+                    logger.debug(f"Error getting tool calls: {e}")
+
         if response_type == "chat" and tool_calls:
             from ..adapters.tool_adapter import format_streaming_tool_call_delta
 
@@ -252,15 +173,13 @@ async def stream_llm_response(
         yield format_sse_message(final_msg)
         yield format_sse_done()
 
-        # Call completion callback in background thread to avoid blocking response flush
+        # Call completion callback
         if on_complete is not None:
-            def run_callback():
-                try:
-                    on_complete(response)
-                except Exception as e:
-                    if debug:
-                        logger.debug(f"Error in on_complete callback: {e}")
-            executor.submit(run_callback)
+            try:
+                on_complete(response)
+            except Exception as e:
+                if debug:
+                    logger.debug(f"Error in on_complete callback: {e}")
 
         if debug:
             logger.debug("SSE generator completed successfully")
@@ -276,12 +195,3 @@ async def stream_llm_response(
         }
         yield format_sse_message(error_msg)
         yield format_sse_done()
-
-    finally:
-        # Signal the background thread to stop - it will complete in background
-        # Note: We don't wait for the thread to finish to avoid delaying the
-        # response completion. The ThreadPoolExecutor will manage cleanup.
-        cancel_event.set()
-
-        if debug:
-            logger.debug("SSE generator cleanup complete")

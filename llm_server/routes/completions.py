@@ -14,7 +14,7 @@ from pydantic import BaseModel
 import llm
 
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, executor, get_model_with_fallback, log_response_to_db
+from ..config import settings, get_async_model_with_fallback, log_response_to_db
 from ..streaming.sse import stream_llm_response, format_sse_message
 
 logger = logging.getLogger(__name__)
@@ -154,10 +154,10 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
 
     response_id = generate_completion_id()
 
-    # Get the model using shared fallback chain
+    # Get the async model using shared fallback chain
     try:
         requested = engine_id or request.model
-        model, actual_model_name, was_fallback = get_model_with_fallback(requested, settings.debug)
+        model, actual_model_name, was_fallback = get_async_model_with_fallback(requested, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
@@ -210,7 +210,7 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
         )
 
         if request.stream:
-            # Streaming response using shared SSE utilities
+            # Streaming response using native async SSE
             stream_headers = {
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
@@ -221,7 +221,6 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
 
             base_stream = stream_llm_response(
                 response=response,
-                executor=executor,
                 model_id=actual_model_name,
                 response_id=response_id,
                 response_type="completion",
@@ -250,12 +249,11 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
                 headers=stream_headers,
             )
         else:
-            # Non-streaming response - run blocking call in executor with timeout
-            loop = asyncio.get_running_loop()
+            # Non-streaming response - native async with timeout
             timeout = settings.request_timeout
             try:
                 full_text = await asyncio.wait_for(
-                    loop.run_in_executor(executor, lambda: response.text()),
+                    response.text(),
                     timeout=timeout
                 )
             except asyncio.TimeoutError:

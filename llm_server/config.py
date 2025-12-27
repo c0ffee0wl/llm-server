@@ -1,10 +1,8 @@
 """Configuration for the LLM server."""
 
-import atexit
 import hashlib
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -72,7 +70,6 @@ class Settings(BaseSettings):
     pidfile: Optional[str] = None
     logfile: Optional[str] = None
     no_log: bool = False  # Disable database logging of requests/responses
-    max_workers: int = 10  # Thread pool size for concurrent LLM operations
     request_timeout: float = 300.0  # Timeout in seconds for LLM requests
 
     class Config:
@@ -203,49 +200,6 @@ class ConversationTracker:
 conversation_tracker = ConversationTracker()
 
 
-# Lazy initialization for executor to respect runtime settings changes
-_executor: Optional[ThreadPoolExecutor] = None
-_executor_lock = threading.Lock()
-
-
-def get_executor() -> ThreadPoolExecutor:
-    """Get or create the shared thread pool executor."""
-    global _executor
-    # Double-checked locking pattern for thread-safe lazy initialization
-    if _executor is None:
-        with _executor_lock:
-            if _executor is None:
-                _executor = ThreadPoolExecutor(max_workers=settings.max_workers)
-                # Register shutdown on process exit
-                atexit.register(shutdown_executor)
-    return _executor
-
-
-def shutdown_executor():
-    """Shutdown the executor gracefully."""
-    global _executor
-    if _executor is not None:
-        _executor.shutdown(wait=True)
-        _executor = None
-
-
-# Backwards compatibility: executor property that uses lazy initialization
-class _ExecutorProxy:
-    """Proxy object that lazily initializes the executor on first access."""
-
-    def submit(self, *args, **kwargs):
-        return get_executor().submit(*args, **kwargs)
-
-    def map(self, *args, **kwargs):
-        return get_executor().map(*args, **kwargs)
-
-    def shutdown(self, *args, **kwargs):
-        return get_executor().shutdown(*args, **kwargs)
-
-
-executor = _ExecutorProxy()
-
-
 def is_gemini_model(model_name: str) -> bool:
     """Check if the model is a Gemini/Vertex model."""
     if not model_name:
@@ -334,6 +288,79 @@ def get_model_with_fallback(
     raise ValueError("No LLM models available. Configure with `llm models default <model>`.")
 
 
+def get_async_model_with_fallback(
+    requested_model: Optional[str] = None,
+    debug: bool = False,
+) -> tuple:
+    """
+    Get an async model with fallback chain. Returns (model, model_name, was_fallback).
+
+    Fallback order:
+    1. llm library's default model (async version)
+    2. Requested model name (if not in IGNORED_MODEL_NAMES)
+    3. Settings model name
+    4. First available async model
+
+    Returns:
+        Tuple of (AsyncModel, model_name, was_fallback) where was_fallback is True
+        if the returned model differs from the requested model.
+
+    Raises:
+        ValueError: If no async model is available
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Try llm library's default model first (async version)
+    try:
+        model = llm.get_async_model()
+        if debug:
+            logger.debug(f"Using llm default async model: {model.model_id}")
+        was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES and model.model_id != requested_model
+        return model, model.model_id, was_fallback
+    except Exception as e:
+        if debug:
+            logger.debug(f"No default async model configured: {e}")
+
+    # 2. Try requested model (async version)
+    if requested_model and requested_model not in IGNORED_MODEL_NAMES:
+        try:
+            model = llm.get_async_model(requested_model)
+            if debug:
+                logger.debug(f"Using requested async model: {requested_model}")
+            return model, requested_model, False
+        except Exception as e:
+            if debug:
+                logger.debug(f"Async model '{requested_model}' not found: {e}")
+
+    # 3. Try settings model (async version)
+    if settings.model_name:
+        try:
+            model = llm.get_async_model(settings.model_name)
+            if debug:
+                logger.debug(f"Using settings async model: {settings.model_name}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, settings.model_name, was_fallback
+        except Exception as e:
+            if debug:
+                logger.debug(f"Settings async model '{settings.model_name}' not found: {e}")
+
+    # 4. First available async model
+    try:
+        available = list(llm.get_async_models())
+        if available:
+            model = available[0]
+            if debug:
+                logger.debug(f"Using first available async model: {model.model_id}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, model.model_id, was_fallback
+    except Exception as e:
+        logger.warning(f"Failed to enumerate async models: {e}")
+
+    raise ValueError("No async LLM models available. Configure with `llm models default <model>`.")
+
+
 def find_model_by_query(queries: list[str]):
     """
     Find a model matching the given query terms.
@@ -394,13 +421,47 @@ def log_response_to_db(response, messages: list[dict] = None):
     with the same message prefix will be grouped together.
 
     Respects the no_log setting. Errors are logged but don't propagate.
+
+    Note: For AsyncResponse objects, the response must be "done" (fully consumed
+    via async iteration or await response.text()) before calling this function.
+    This function will convert AsyncResponse to sync Response for logging.
     """
     if settings.no_log:
         return
     import logging
-    from llm.models import Conversation
+    from llm.models import Conversation, Response, AsyncResponse
     logger = logging.getLogger(__name__)
     try:
+        # Convert AsyncResponse to sync Response for logging
+        # AsyncResponse doesn't have log_to_db(), but after streaming completes
+        # we can build a sync Response from its data
+        if isinstance(response, AsyncResponse):
+            if not response._done:
+                logger.warning("Cannot log AsyncResponse that hasn't completed")
+                return
+            # Build a sync Response from the AsyncResponse data
+            sync_response = Response(
+                response.prompt,
+                response.model,  # AsyncModel, but Response accepts it for logging
+                response.stream,
+                conversation=None,
+            )
+            sync_response.id = response.id
+            sync_response._chunks = list(response._chunks)
+            sync_response._done = response._done
+            sync_response._end = response._end
+            sync_response._start = response._start
+            sync_response._start_utcnow = response._start_utcnow
+            sync_response.input_tokens = response.input_tokens
+            sync_response.output_tokens = response.output_tokens
+            sync_response.token_details = response.token_details
+            sync_response._prompt_json = response._prompt_json
+            sync_response.response_json = response.response_json
+            sync_response._tool_calls = list(response._tool_calls)
+            sync_response.attachments = list(response.attachments)
+            sync_response.resolved_model = response.resolved_model
+            response = sync_response
+
         # Look up or create conversation ID based on message history
         conv_id = None
         if messages:
@@ -423,7 +484,8 @@ def log_response_to_db(response, messages: list[dict] = None):
         # Store conversation state for future lookups
         if messages:
             try:
-                response_text = response.text()
+                # Use text_or_raise() for sync access after response is done
+                response_text = response.text_or_raise() if response._done else ""
             except Exception as e:
                 logger.warning(f"Failed to get response text for conversation tracking: {e}")
                 response_text = ""
