@@ -266,8 +266,8 @@ def apply_settings(
     current: Dict[str, Any],
     new_settings: Dict[str, Any],
     dry_run: bool = False
-) -> Dict[str, Any]:
-    """Apply new settings and return the updated settings dict."""
+) -> tuple[Dict[str, Any], bool]:
+    """Apply new settings and return (updated settings dict, has_changes)."""
     changes = []
 
     for key, value in new_settings.items():
@@ -286,7 +286,7 @@ def apply_settings(
     else:
         print("\nNo changes needed - settings already configured.")
 
-    return current
+    return current, bool(changes)
 
 
 def main():
@@ -404,9 +404,9 @@ def configure_settings_file(settings_path: Path, args) -> bool:
         new_settings = LOCAL_LLM_SETTINGS
 
     # Apply settings
-    updated = apply_settings(current_settings, new_settings, dry_run=args.dry_run)
+    updated, has_changes = apply_settings(current_settings, new_settings, dry_run=args.dry_run)
 
-    if not args.dry_run:
+    if not args.dry_run and has_changes:
         # Create backup unless disabled
         if not args.no_backup and settings_path.exists():
             if backup_settings(settings_path) is None:
@@ -418,8 +418,11 @@ def configure_settings_file(settings_path: Path, args) -> bool:
             return True
         else:
             return False
-    else:
+    elif args.dry_run:
         print("\n(Dry run - no changes made)")
+        return True
+    else:
+        # No changes needed
         return True
 
 
