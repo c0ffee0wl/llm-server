@@ -41,5 +41,6 @@ include = ["llm_server*"]
 py-modules = ["configure_vscode"]
 
 [tool.uv.sources]
+llm = { git = "https://github.com/c0ffee0wl/llm" }
 llm-vertex = { git = "https://github.com/c0ffee0wl/llm-vertex" }
 llm-gemini = { git = "https://github.com/c0ffee0wl/llm-gemini" }
