@@ -21,6 +21,7 @@ dependencies = [
     "llm-anthropic",
     "json-five>=1.1.1",  # For parsing/writing VS Code JSONC settings with round-trip comment preservation
     "pystemd>=0.10.0",  # For systemd service management
+    "python-daemon>=3.0.0",  # For daemonization (PEP 3143)
 ]
 
 [project.optional-dependencies]

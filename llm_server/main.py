@@ -1,10 +1,12 @@
 """Main FastAPI application for the LLM server."""
 
-import atexit
-import errno
 import logging
 import os
 import sys
+
+import daemon
+from daemon import pidfile as daemon_pidfile
+from lockfile import AlreadyLocked, LockTimeout
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,99 +85,44 @@ async def root():
     }
 
 
-def _remove_pidfile(pidfile: str):
-    """Remove the PID file on exit."""
-    try:
-        os.remove(pidfile)
-    except OSError:
-        pass
-
-
-def _check_pidfile(pidfile: str) -> int | None:
-    """Check if a PID file exists and if the process is running. Returns PID if running."""
-    try:
-        with open(pidfile, "r") as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)  # Check if process exists
-        return pid
-    except (FileNotFoundError, ValueError):
-        return None
-    except OSError as e:
-        if e.errno == errno.ESRCH:  # No such process
-            return None
-        if e.errno == errno.EPERM:  # Process exists but not owned by us
-            return pid
-        return None
-
-
-def _daemonize(pidfile: str | None, logfile: str | None):
-    """Daemonize the current process using double-fork."""
+def _run_as_daemon(pidfile_path: str | None, logfile: str | None):
+    """Run the server as a daemon using python-daemon (PEP 3143)."""
     if sys.platform == "win32":
         sys.stderr.write("Error: --daemon is not supported on Windows\n")
         sys.exit(1)
 
-    # Check for already running daemon
-    if pidfile:
-        existing_pid = _check_pidfile(pidfile)
-        if existing_pid:
-            sys.stderr.write(f"Error: Daemon already running with PID {existing_pid}\n")
-            sys.exit(1)
-
-    # First fork
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError as e:
-        sys.stderr.write(f"First fork failed: {e}\n")
-        sys.exit(1)
-
-    # Decouple from parent environment
-    os.chdir("/")
-    os.setsid()
-    os.umask(0)
-
-    # Second fork
-    try:
-        pid = os.fork()
-        if pid > 0:
-            sys.exit(0)
-    except OSError as e:
-        sys.stderr.write(f"Second fork failed: {e}\n")
-        sys.exit(1)
-
-    # Redirect standard file descriptors
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-    # Open and duplicate file descriptors, then close the originals
-    devnull = open(os.devnull, "r+b")
-    os.dup2(devnull.fileno(), sys.stdin.fileno())
-
+    # Ensure directories exist before opening files
+    if pidfile_path:
+        pidfile_dir = os.path.dirname(pidfile_path)
+        if pidfile_dir and not os.path.exists(pidfile_dir):
+            os.makedirs(pidfile_dir, exist_ok=True)
     if logfile:
-        # Ensure log directory exists
         logfile_dir = os.path.dirname(logfile)
         if logfile_dir and not os.path.exists(logfile_dir):
             os.makedirs(logfile_dir, exist_ok=True)
-        log_fd = open(logfile, "a+")
-        os.dup2(log_fd.fileno(), sys.stdout.fileno())
-        os.dup2(log_fd.fileno(), sys.stderr.fileno())
-        log_fd.close()  # Close original after dup2
-    else:
-        os.dup2(devnull.fileno(), sys.stdout.fileno())
-        os.dup2(devnull.fileno(), sys.stderr.fileno())
 
-    devnull.close()  # Close original after dup2
+    # Prepare file handles (must be opened before daemonizing)
+    stdout_file = open(logfile, 'a+') if logfile else None
+    stderr_file = stdout_file  # Share the same file handle
 
-    # Write PID file
-    if pidfile:
-        # Ensure PID file directory exists
-        pidfile_dir = os.path.dirname(pidfile)
-        if pidfile_dir and not os.path.exists(pidfile_dir):
-            os.makedirs(pidfile_dir, exist_ok=True)
-        with open(pidfile, "w") as f:
-            f.write(f"{os.getpid()}\n")
-        atexit.register(_remove_pidfile, pidfile)
+    # Create pidfile lock (TimeoutPIDLockFile with acquire_timeout=0 for immediate fail)
+    pidfile_lock = daemon_pidfile.TimeoutPIDLockFile(pidfile_path, acquire_timeout=0) if pidfile_path else None
+
+    context = daemon.DaemonContext(
+        working_directory='/',
+        umask=0,
+        pidfile=pidfile_lock,
+        stdout=stdout_file,
+        stderr=stderr_file,
+    )
+
+    try:
+        context.open()
+    except (AlreadyLocked, LockTimeout):
+        sys.stderr.write(f"Error: Daemon already running (pidfile locked: {pidfile_path})\n")
+        sys.exit(1)
+    # Note: Don't close context - daemon runs until terminated
+    # atexit handler is registered automatically by DaemonContext.open()
 
 
 def run():
@@ -248,7 +195,7 @@ def run():
 
     # Daemonize before configuring logging (redirects file descriptors)
     if args.daemon:
-        _daemonize(settings.pidfile, settings.logfile)
+        _run_as_daemon(settings.pidfile, settings.logfile)
 
     # Configure logging after daemonization so handlers use correct fds
     if settings.debug:
