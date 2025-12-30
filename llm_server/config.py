@@ -288,6 +288,82 @@ def get_model_with_fallback(
     raise ValueError("No LLM models available. Configure with `llm models default <model>`.")
 
 
+def get_async_model_client_choice(
+    requested_model: Optional[str] = None,
+    debug: bool = False,
+) -> tuple:
+    """
+    Get an async model prioritizing the client's requested model.
+    Returns (model, model_name, was_fallback).
+
+    Fallback order (client choice takes priority):
+    1. Requested model name (if not in IGNORED_MODEL_NAMES)
+    2. llm library's default model (async version)
+    3. Settings model name
+    4. First available async model
+
+    This is used by /v2 endpoints where the client's model selection is respected.
+
+    Returns:
+        Tuple of (AsyncModel, model_name, was_fallback) where was_fallback is True
+        if the returned model differs from the requested model.
+
+    Raises:
+        ValueError: If no async model is available
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Try requested model FIRST (client's choice takes priority)
+    if requested_model and requested_model not in IGNORED_MODEL_NAMES:
+        try:
+            model = llm.get_async_model(requested_model)
+            if debug:
+                logger.debug(f"Using client-requested async model: {requested_model}")
+            return model, requested_model, False  # Not a fallback - using requested model
+        except Exception as e:
+            if debug:
+                logger.debug(f"Client-requested async model '{requested_model}' not found: {e}")
+
+    # 2. Try llm library's default model (async version)
+    try:
+        model = llm.get_async_model()
+        if debug:
+            logger.debug(f"Using llm default async model: {model.model_id}")
+        was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+        return model, model.model_id, was_fallback
+    except Exception as e:
+        if debug:
+            logger.debug(f"No default async model configured: {e}")
+
+    # 3. Try settings model (async version)
+    if settings.model_name:
+        try:
+            model = llm.get_async_model(settings.model_name)
+            if debug:
+                logger.debug(f"Using settings async model: {settings.model_name}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, settings.model_name, was_fallback
+        except Exception as e:
+            if debug:
+                logger.debug(f"Settings async model '{settings.model_name}' not found: {e}")
+
+    # 4. First available async model
+    try:
+        available = list(llm.get_async_models())
+        if available:
+            model = available[0]
+            if debug:
+                logger.debug(f"Using first available async model: {model.model_id}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, model.model_id, was_fallback
+    except Exception as e:
+        logger.warning(f"Failed to enumerate async models: {e}")
+
+    raise ValueError("No async LLM models available. Configure with `llm models default <model>`.")
+
+
 def get_async_model_with_fallback(
     requested_model: Optional[str] = None,
     debug: bool = False,
@@ -295,11 +371,13 @@ def get_async_model_with_fallback(
     """
     Get an async model with fallback chain. Returns (model, model_name, was_fallback).
 
-    Fallback order:
+    Fallback order (server default takes priority):
     1. llm library's default model (async version)
     2. Requested model name (if not in IGNORED_MODEL_NAMES)
     3. Settings model name
     4. First available async model
+
+    This is used by /v1 endpoints where the server's configured model takes priority.
 
     Returns:
         Tuple of (AsyncModel, model_name, was_fallback) where was_fallback is True

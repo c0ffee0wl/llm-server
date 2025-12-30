@@ -20,7 +20,7 @@ from ..adapters.openai_adapter import (
 )
 from ..adapters.tool_adapter import format_tool_call_response
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, get_async_model_with_fallback, log_response_to_db, conversation_tracker
+from ..config import settings, get_async_model_with_fallback, get_async_model_client_choice, log_response_to_db, conversation_tracker
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
@@ -107,12 +107,13 @@ class ChatCompletionRequest(BaseModel):
         return v
 
 
-@router.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest):
+async def _create_chat_completion_impl(request: ChatCompletionRequest, model_getter):
     """
-    Create a chat completion using the llm library.
+    Shared implementation for chat completions.
 
-    Supports both streaming and non-streaming responses.
+    Args:
+        request: The chat completion request
+        model_getter: Function to get the model (get_async_model_with_fallback or get_async_model_client_choice)
     """
     # Debug logging (only when --debug flag is set)
     if settings.debug:
@@ -125,9 +126,9 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     response_id = generate_response_id()
 
-    # Get the async model using shared fallback chain
+    # Get the async model using the provided model getter
     try:
-        model, model_name, was_fallback = get_async_model_with_fallback(request.model, settings.debug)
+        model, model_name, was_fallback = model_getter(request.model, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
@@ -354,3 +355,26 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 }
             },
         )
+
+
+@router.post("/v1/chat/completions")
+async def create_chat_completion(request: ChatCompletionRequest):
+    """
+    Create a chat completion using the llm library (server default model).
+
+    Uses the server's configured default model regardless of what model the client requests.
+    Supports both streaming and non-streaming responses.
+    """
+    return await _create_chat_completion_impl(request, get_async_model_with_fallback)
+
+
+@router.post("/v2/chat/completions")
+async def create_chat_completion_v2(request: ChatCompletionRequest):
+    """
+    Create a chat completion using the llm library (client's model choice).
+
+    Respects the client's requested model. Falls back to server default only if
+    the requested model is unavailable.
+    Supports both streaming and non-streaming responses.
+    """
+    return await _create_chat_completion_impl(request, get_async_model_client_choice)

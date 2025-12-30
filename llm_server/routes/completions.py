@@ -14,7 +14,7 @@ from pydantic import BaseModel
 import llm
 
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, get_async_model_with_fallback, log_response_to_db
+from ..config import settings, get_async_model_with_fallback, get_async_model_client_choice, log_response_to_db
 from ..streaming.sse import stream_llm_response, format_sse_message
 
 logger = logging.getLogger(__name__)
@@ -137,15 +137,14 @@ class CompletionRequest(BaseModel):
         extra = "allow"
 
 
-@router.post("/v1/completions")
-@router.post("/v1/engines/{engine_id}/completions")
-async def create_completion(request: CompletionRequest, engine_id: Optional[str] = None):
+async def _create_completion_impl(request: CompletionRequest, model_getter, engine_id: Optional[str] = None):
     """
-    Create a completion for code/text.
+    Shared implementation for completions.
 
-    This endpoint handles both:
-    - /v1/completions (standard)
-    - /v1/engines/{engine_id}/completions (legacy)
+    Args:
+        request: The completion request
+        model_getter: Function to get the model (get_async_model_with_fallback or get_async_model_client_choice)
+        engine_id: Optional engine ID from legacy endpoint
     """
     if settings.debug:
         logger.debug(f"=== Completion request ===")
@@ -154,10 +153,10 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
 
     response_id = generate_completion_id()
 
-    # Get the async model using shared fallback chain
+    # Get the async model using the provided model getter
     try:
         requested = engine_id or request.model
-        model, actual_model_name, was_fallback = get_async_model_with_fallback(requested, settings.debug)
+        model, actual_model_name, was_fallback = model_getter(requested, settings.debug)
     except ValueError as e:
         return JSONResponse(
             status_code=400,
@@ -312,3 +311,34 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
             status_code=500,
             content={"error": {"message": str(e), "type": "server_error", "code": "internal_error"}}
         )
+
+
+@router.post("/v1/completions")
+@router.post("/v1/engines/{engine_id}/completions")
+async def create_completion(request: CompletionRequest, engine_id: Optional[str] = None):
+    """
+    Create a completion for code/text (server default model).
+
+    Uses the server's configured default model regardless of what model the client requests.
+
+    This endpoint handles both:
+    - /v1/completions (standard)
+    - /v1/engines/{engine_id}/completions (legacy)
+    """
+    return await _create_completion_impl(request, get_async_model_with_fallback, engine_id)
+
+
+@router.post("/v2/completions")
+@router.post("/v2/engines/{engine_id}/completions")
+async def create_completion_v2(request: CompletionRequest, engine_id: Optional[str] = None):
+    """
+    Create a completion for code/text (client's model choice).
+
+    Respects the client's requested model. Falls back to server default only if
+    the requested model is unavailable.
+
+    This endpoint handles both:
+    - /v2/completions (standard)
+    - /v2/engines/{engine_id}/completions (legacy)
+    """
+    return await _create_completion_impl(request, get_async_model_client_choice, engine_id)
