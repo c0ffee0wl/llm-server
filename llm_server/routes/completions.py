@@ -328,9 +328,9 @@ async def create_completion(request: CompletionRequest, engine_id: Optional[str]
     return await _create_completion_impl(request, get_async_model_with_fallback, engine_id)
 
 
-@router.post("/v2/completions")
-@router.post("/v2/engines/{engine_id}/completions")
-async def create_completion_v2(request: CompletionRequest, engine_id: Optional[str] = None):
+@router.post("/v1c/completions")
+@router.post("/v1c/engines/{engine_id}/completions")
+async def create_completion_v1c(request: CompletionRequest, engine_id: Optional[str] = None):
     """
     Create a completion for code/text (client's model choice).
 
@@ -338,7 +338,7 @@ async def create_completion_v2(request: CompletionRequest, engine_id: Optional[s
     the requested model is unavailable.
 
     This endpoint handles both:
-    - /v2/completions (standard)
-    - /v2/engines/{engine_id}/completions (legacy)
+    - /v1c/completions (standard)
+    - /v1c/engines/{engine_id}/completions (legacy)
     """
     return await _create_completion_impl(request, get_async_model_client_choice, engine_id)

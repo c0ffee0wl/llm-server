@@ -51,9 +51,9 @@ OpenAI Client → FastAPI Endpoint → Adapter Layer → llm Library (async) →
 ### Key Components
 
 **Routes (`llm_server/routes/`):**
-- `chat.py` - `/v1/chat/completions` and `/v2/chat/completions` endpoints with conversation history, tool calling, image attachments
-- `completions.py` - `/v1/completions` and `/v2/completions` legacy text completion endpoints with echo/suffix support
-- `models.py` - `/v1/models` and `/v2/models` endpoints with 1-hour TTL cache
+- `chat.py` - `/v1/chat/completions` and `/v1c/chat/completions` endpoints with conversation history, tool calling, image attachments
+- `completions.py` - `/v1/completions` and `/v1c/completions` legacy text completion endpoints with echo/suffix support
+- `models.py` - `/v1/models` and `/v1c/models` endpoints with 1-hour TTL cache
 
 ### API Versions
 
@@ -62,10 +62,10 @@ The server provides two API versions with different model selection behavior:
 | Endpoint | Model Selection |
 |----------|-----------------|
 | `/v1/*` | **Server default** - Uses the server's configured model (`llm models default` or `-m` flag), ignoring the client's `model` parameter |
-| `/v2/*` | **Client choice** - Respects the client's requested `model` parameter, falls back to server default only if unavailable |
+| `/v1c/*` | **Client choice** - Respects the client's requested `model` parameter, falls back to server default only if unavailable |
 
 Use `/v1` when you want centralized model control (e.g., all clients use the same model).
-Use `/v2` when clients need to select specific models (e.g., different models for different tasks).
+Use `/v1c` when clients need to select specific models (e.g., different models for different tasks).
 
 **Adapters (`llm_server/adapters/`):**
 - `openai_adapter.py` - Converts OpenAI message format to llm library format. Handles multimodal content, tool definitions, and tool results. Key function: `parse_conversation()`
@@ -80,7 +80,7 @@ Use `/v2` when clients need to select specific models (e.g., different models fo
 **Config (`llm_server/config.py`):**
 - `Settings` class with `LLM_SERVER_*` environment variable prefix
 - `get_async_model_with_fallback()` - For `/v1`: llm default → requested → settings → first available
-- `get_async_model_client_choice()` - For `/v2`: requested → llm default → settings → first available
+- `get_async_model_client_choice()` - For `/v1c`: requested → llm default → settings → first available
 - `ConversationTracker` - Hash-based conversation grouping for database logging
 - `log_response_to_db()` - Handles both sync Response and async AsyncResponse objects
 

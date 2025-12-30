@@ -302,7 +302,7 @@ def get_async_model_client_choice(
     3. Settings model name
     4. First available async model
 
-    This is used by /v2 endpoints where the client's model selection is respected.
+    This is used by /v1c endpoints where the client's model selection is respected.
 
     Returns:
         Tuple of (AsyncModel, model_name, was_fallback) where was_fallback is True
@@ -377,7 +377,7 @@ def get_async_model_with_fallback(
     3. Settings model name
     4. First available async model
 
-    This is used by /v1 endpoints where the server's configured model takes priority.
+    This is used by /v1 endpoints where the server's configured default model takes priority.
 
     Returns:
         Tuple of (AsyncModel, model_name, was_fallback) where was_fallback is True

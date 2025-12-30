@@ -116,7 +116,7 @@ def get_model_list() -> List[Dict[str, Any]]:
 
 
 @router.get("/v1/models")
-@router.get("/v2/models")
+@router.get("/v1c/models")
 async def list_models() -> Dict[str, Any]:
     """List available models from the llm library."""
     return {
@@ -126,7 +126,7 @@ async def list_models() -> Dict[str, Any]:
 
 
 @router.get("/v1/models/{model_id}")
-@router.get("/v2/models/{model_id}")
+@router.get("/v1c/models/{model_id}")
 async def get_model(model_id: str) -> Dict[str, Any]:
     """Get a specific model by ID."""
     models = get_model_list()

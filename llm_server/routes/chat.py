@@ -368,8 +368,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
     return await _create_chat_completion_impl(request, get_async_model_with_fallback)
 
 
-@router.post("/v2/chat/completions")
-async def create_chat_completion_v2(request: ChatCompletionRequest):
+@router.post("/v1c/chat/completions")
+async def create_chat_completion_v1c(request: ChatCompletionRequest):
     """
     Create a chat completion using the llm library (client's model choice).
 
