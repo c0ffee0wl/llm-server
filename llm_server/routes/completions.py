@@ -5,13 +5,12 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
-import llm
 
 from ..adapters.model_adapters import get_adapter
 from ..config import settings, get_async_model_with_fallback, get_async_model_client_choice, log_response_to_db
@@ -147,7 +146,7 @@ async def _create_completion_impl(request: CompletionRequest, model_getter, engi
         engine_id: Optional engine ID from legacy endpoint
     """
     if settings.debug:
-        logger.debug(f"=== Completion request ===")
+        logger.debug("=== Completion request ===")
         logger.debug(f"Engine: {engine_id}, Model: {request.model}")
         logger.debug(f"Stream: {request.stream}")
 

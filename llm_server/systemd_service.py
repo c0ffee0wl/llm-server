@@ -180,11 +180,11 @@ def install_service(
             print(f"Starting {socket_unit_name}...")
             manager.Manager.StartUnit(socket_unit_name.encode(), b"replace")
 
-            print(f"\nService installed successfully!")
+            print("\nService installed successfully!")
             print(f"Socket: {socket_path}")
             print(f"Service: {service_path}")
             print(f"\nThe service will start automatically when connections arrive on port {port}")
-            print(f"\nTo check status:")
+            print("\nTo check status:")
             if user_mode:
                 print(f"  systemctl --user status {socket_unit_name}")
             else:
@@ -198,10 +198,10 @@ def install_service(
         print(f"Error enabling/starting service: {e}")
         print("\nUnit files were written successfully. You can try manually with:")
         if user_mode:
-            print(f"  systemctl --user daemon-reload")
+            print("  systemctl --user daemon-reload")
             print(f"  systemctl --user enable --now {socket_unit_name}")
         else:
-            print(f"  sudo systemctl daemon-reload")
+            print("  sudo systemctl daemon-reload")
             print(f"  sudo systemctl enable --now {socket_unit_name}")
         return False
 
@@ -248,7 +248,7 @@ def uninstall_service(user_mode: bool = True) -> bool:
                 pass
 
             # Disable units
-            print(f"Disabling units...")
+            print("Disabling units...")
             try:
                 manager.Manager.DisableUnitFiles([socket_unit_name.encode()], False)
             except Exception:
@@ -282,7 +282,7 @@ def uninstall_service(user_mode: bool = True) -> bool:
             service_path.unlink()
         print("\nUnit files removed. You may need to run:")
         if user_mode:
-            print(f"  systemctl --user daemon-reload")
+            print("  systemctl --user daemon-reload")
         else:
-            print(f"  sudo systemctl daemon-reload")
+            print("  sudo systemctl daemon-reload")
         return False

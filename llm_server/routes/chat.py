@@ -10,7 +10,6 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 
-import llm
 
 from ..adapters.openai_adapter import (
     parse_conversation,
@@ -20,7 +19,7 @@ from ..adapters.openai_adapter import (
 )
 from ..adapters.tool_adapter import format_tool_call_response
 from ..adapters.model_adapters import get_adapter
-from ..config import settings, get_async_model_with_fallback, get_async_model_client_choice, log_response_to_db, conversation_tracker
+from ..config import settings, get_async_model_with_fallback, get_async_model_client_choice, log_response_to_db
 from ..streaming.sse import stream_llm_response
 
 logger = logging.getLogger(__name__)
