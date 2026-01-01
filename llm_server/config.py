@@ -459,6 +459,68 @@ def find_model_by_query(queries: list[str]):
     return None
 
 
+def get_embedding_model_with_fallback(
+    requested_model: Optional[str] = None,
+    debug: bool = False,
+) -> tuple:
+    """
+    Get an embedding model with fallback chain. Returns (model, model_name, was_fallback).
+
+    Fallback order (client choice takes priority for embeddings):
+    1. Requested model name
+    2. llm library's default embedding model
+    3. First available embedding model
+
+    Returns:
+        Tuple of (EmbeddingModel, model_name, was_fallback) where was_fallback is True
+        if the returned model differs from the requested model.
+
+    Raises:
+        ValueError: If no embedding model is available
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Try requested model first (client's choice takes priority)
+    if requested_model and requested_model not in IGNORED_MODEL_NAMES:
+        try:
+            model = llm.get_embedding_model(requested_model)
+            if debug:
+                logger.debug(f"Using requested embedding model: {requested_model}")
+            return model, model.model_id, False  # Not a fallback
+        except llm.UnknownModelError as e:
+            if debug:
+                logger.debug(f"Requested embedding model '{requested_model}' not found: {e}")
+
+    # 2. Try default embedding model
+    default_model = llm.get_default_embedding_model()
+    if default_model:
+        try:
+            model = llm.get_embedding_model(default_model)
+            if debug:
+                logger.debug(f"Using default embedding model: {default_model}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, model.model_id, was_fallback
+        except llm.UnknownModelError as e:
+            if debug:
+                logger.debug(f"Default embedding model '{default_model}' not found: {e}")
+
+    # 3. First available embedding model
+    try:
+        available = llm.get_embedding_models()
+        if available:
+            model = available[0]
+            if debug:
+                logger.debug(f"Using first available embedding model: {model.model_id}")
+            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
+            return model, model.model_id, was_fallback
+    except Exception as e:
+        logger.warning(f"Failed to enumerate embedding models: {e}")
+
+    raise ValueError("No embedding models available. Install an embedding plugin (e.g., llm-sentence-transformers).")
+
+
 def get_model_context_limit(model_name: str) -> int:
     """
     Get the context limit (max input tokens) for a model.

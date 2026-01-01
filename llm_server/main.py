@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from .config import settings
-from .routes import chat, models, completions
+from .routes import chat, models, completions, embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(models.router)
 app.include_router(completions.router)
+app.include_router(embeddings.router)
 
 
 @app.get("/health")
@@ -79,6 +80,7 @@ async def root():
         "endpoints": {
             "chat_completions": "/v1/chat/completions",
             "completions": "/v1/completions",
+            "embeddings": "/v1/embeddings",
             "models": "/v1/models",
             "health": "/health",
         },

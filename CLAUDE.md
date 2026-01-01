@@ -53,6 +53,7 @@ OpenAI Client → FastAPI Endpoint → Adapter Layer → llm Library (async) →
 **Routes (`llm_server/routes/`):**
 - `chat.py` - `/v1/chat/completions` and `/v1c/chat/completions` endpoints with conversation history, tool calling, image attachments
 - `completions.py` - `/v1/completions` and `/v1c/completions` legacy text completion endpoints with echo/suffix support
+- `embeddings.py` - `/v1/embeddings` and `/v1c/embeddings` endpoints for text embeddings (both respect client's model choice)
 - `models.py` - `/v1/models` and `/v1c/models` endpoints with 1-hour TTL cache
 
 ### API Versions
@@ -66,6 +67,8 @@ The server provides two API versions with different model selection behavior:
 
 Use `/v1` when you want centralized model control (e.g., all clients use the same model).
 Use `/v1c` when clients need to select specific models (e.g., different models for different tasks).
+
+**Note:** Embeddings endpoints (`/v1/embeddings` and `/v1c/embeddings`) always respect the client's model choice, since embedding models are typically task-specific.
 
 **Adapters (`llm_server/adapters/`):**
 - `openai_adapter.py` - Converts OpenAI message format to llm library format. Handles multimodal content, tool definitions, and tool results. Key function: `parse_conversation()`
@@ -81,6 +84,7 @@ Use `/v1c` when clients need to select specific models (e.g., different models f
 - `Settings` class with `LLM_SERVER_*` environment variable prefix
 - `get_async_model_with_fallback()` - For `/v1`: llm default → requested → settings → first available
 - `get_async_model_client_choice()` - For `/v1c`: requested → llm default → settings → first available
+- `get_embedding_model_with_fallback()` - For embeddings: requested → llm default embedding → first available
 - `ConversationTracker` - Hash-based conversation grouping for database logging
 - `log_response_to_db()` - Handles both sync Response and async AsyncResponse objects
 
