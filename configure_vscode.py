@@ -41,9 +41,15 @@ LOCAL_LLM_SETTINGS = {
     # DISABLE CAPI-DEPENDENT FEATURES
     # These features require GitHub/Microsoft backend
     # ========================================
-    "github.copilot.chat.codesearch.enabled": False,
-    "github.copilot.chat.codesearch.agent.enabled": False,
-    "github.copilot.chat.search.semanticTextResults": False,
+    "github.copilot.chat.cloudAgent.enabled": False,
+    "github.copilot.chat.backgroundAgent.enabled": False,
+    "github.copilot.chat.claudeAgent.enabled": False,
+    "github.copilot.chat.reviewAgent.enabled": False,
+    "github.copilot.chat.copilotMemory.enabled": False,
+    "github.copilot.chat.githubMcpServer.enabled": False,
+    "github.copilot.chat.organizationCustomAgents.enabled": False,
+    "github.copilot.chat.organizationInstructions.enabled": False,
+    "github.copilot.chat.anthropic.tools.websearch.enabled": False,
 
     # ========================================
     # DISABLE VS CODE CORE TELEMETRY
@@ -89,9 +95,15 @@ LOCAL_LLM_SETTINGS = {
 
 # Default values for restore operation
 DEFAULT_VALUES = {
-    "github.copilot.chat.codesearch.enabled": False,  # Default is false anyway
-    "github.copilot.chat.codesearch.agent.enabled": True,
-    "github.copilot.chat.search.semanticTextResults": True,
+    "github.copilot.chat.cloudAgent.enabled": True,
+    "github.copilot.chat.backgroundAgent.enabled": True,
+    "github.copilot.chat.claudeAgent.enabled": True,
+    "github.copilot.chat.reviewAgent.enabled": True,
+    "github.copilot.chat.copilotMemory.enabled": False,  # Default is false (experiment-based)
+    "github.copilot.chat.githubMcpServer.enabled": False,  # Default is false (experiment-based)
+    "github.copilot.chat.organizationCustomAgents.enabled": True,
+    "github.copilot.chat.organizationInstructions.enabled": True,
+    "github.copilot.chat.anthropic.tools.websearch.enabled": False,  # Default is false (experiment-based)
     "telemetry.telemetryLevel": "all",
     "update.mode": "default",
     "update.showReleaseNotes": True,
@@ -369,7 +381,10 @@ Examples:
         return
 
     if args.all:
-        found = all_vscode_settings()
+        found = find_vscode_settings()
+        if not found:
+            # No existing installations found; only create config for regular VS Code
+            found = [("code", get_vscode_config_path("user", "code"))]
         for variant, path in found:
             print(f"\n{'='*60}")
             print(f"Configuring {variant}: {path}")
