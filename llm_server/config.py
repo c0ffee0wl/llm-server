@@ -10,6 +10,8 @@ import llm
 import sqlite_utils
 from llm.migrations import migrate
 
+_db_migrated = False
+
 # Model-specific context limits (input tokens)
 # Based on provider documentation as of 2025-12
 MODEL_CONTEXT_LIMITS = {
@@ -204,88 +206,11 @@ def is_gemini_model(model_name: str) -> bool:
     """Check if the model is a Gemini/Vertex model."""
     if not model_name:
         return False
-    return model_name.startswith("gemini/") or model_name.startswith("vertex/")
+    return model_name.startswith("gemini/") or model_name.startswith("gemini-") or model_name.startswith("vertex/")
 
 
 # Model names to ignore when falling back (placeholder names from clients)
 IGNORED_MODEL_NAMES = frozenset({"local-llm", "gpt-41-copilot"})
-
-
-def get_model_with_fallback(
-    requested_model: Optional[str] = None,
-    debug: bool = False,
-) -> tuple:
-    """
-    Ruft ein Modell mit Fallback-Kette ab. Gibt (Modell, Modellname, war_fallback) zurück.
-
-    Fallback-Reihenfolge:
-    1. Das über die `llm models default`-Konfiguration der llm-Bibliothek festgelegte Standardmodell
-    2. Angefragter Modellname (falls nicht in IGNORED_MODEL_NAMES enthalten)
-    3. Modellname aus den Einstellungen (`settings.model_name`)
-    4. Erstes verfügbares Modell
-
-    Gibt zurück:
-        Ein Tupel aus (Modell, Modellname, war_fallback), wobei war_fallback True ist,
-        wenn das zurückgegebene Modell vom angefragten Modell abweicht.
-
-    Löst aus:
-        ValueError: Wenn kein Modell verfügbar ist
-    """
-    import logging
-    import llm
-
-    logger = logging.getLogger(__name__)
-
-    # 1. Try llm library's default model first
-    try:
-        model = llm.get_model()
-        if debug:
-            logger.debug(f"Using llm default model: {model.model_id}")
-        # It's a fallback if the default differs from requested
-        was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES and model.model_id != requested_model
-        return model, model.model_id, was_fallback
-    except Exception as e:
-        if debug:
-            logger.debug(f"No default model configured: {e}")
-
-    # 2. Try requested model
-    if requested_model and requested_model not in IGNORED_MODEL_NAMES:
-        try:
-            model = llm.get_model(requested_model)
-            if debug:
-                logger.debug(f"Using requested model: {requested_model}")
-            return model, requested_model, False  # Not a fallback - using requested model
-        except Exception as e:
-            if debug:
-                logger.debug(f"Model '{requested_model}' not found: {e}")
-
-    # 3. Try settings model
-    if settings.model_name:
-        try:
-            model = llm.get_model(settings.model_name)
-            if debug:
-                logger.debug(f"Using settings model: {settings.model_name}")
-            # It's a fallback if settings model differs from requested
-            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
-            return model, settings.model_name, was_fallback
-        except Exception as e:
-            if debug:
-                logger.debug(f"Settings model '{settings.model_name}' not found: {e}")
-
-    # 4. First available model
-    try:
-        available = list(llm.get_models())
-        if available:
-            model = available[0]
-            if debug:
-                logger.debug(f"Using first available model: {model.model_id}")
-            # It's a fallback if first available differs from requested
-            was_fallback = requested_model and requested_model not in IGNORED_MODEL_NAMES
-            return model, model.model_id, was_fallback
-    except Exception as e:
-        logger.warning(f"Failed to enumerate models: {e}")
-
-    raise ValueError("No LLM models available. Configure with `llm models default <model>`.")
 
 
 def get_async_model_client_choice(
@@ -453,9 +378,17 @@ def find_model_by_query(queries: list[str]):
 
     for model in llm.get_models():
         model_id_lower = model.model_id.lower()
-        # Check if all query terms match the model id
         if all(q.lower() in model_id_lower for q in queries):
             return model
+
+    # Fallback: search async-only models
+    sync_ids = {m.model_id for m in llm.get_models()}
+    for model in llm.get_async_models():
+        if model.model_id not in sync_ids:
+            model_id_lower = model.model_id.lower()
+            if all(q.lower() in model_id_lower for q in queries):
+                return model
+
     return None
 
 
@@ -572,9 +505,11 @@ def log_response_to_db(response, messages: list[dict] = None):
     from llm.models import Conversation, Response, AsyncResponse
     logger = logging.getLogger(__name__)
     try:
-        # Convert AsyncResponse to sync Response for logging
-        # AsyncResponse doesn't have log_to_db(), but after streaming completes
-        # we can build a sync Response from its data
+        # Manual field copy from AsyncResponse to sync Response for logging.
+        # The llm library's AsyncResponse.to_sync_response() is async and cannot
+        # be called from this sync function. The copy is safe because the response
+        # is already complete (_done=True). If the llm library adds new fields
+        # to _BaseResponse, this copy may need updating.
         if isinstance(response, AsyncResponse):
             if not response._done:
                 logger.warning("Cannot log AsyncResponse that hasn't completed")
@@ -617,8 +552,11 @@ def log_response_to_db(response, messages: list[dict] = None):
             response.conversation = Conversation(model=response.model, id=conv_id)
 
         # Log to database
+        global _db_migrated
         db = sqlite_utils.Database(llm.user_dir() / "log-server.db")
-        migrate(db)
+        if not _db_migrated:
+            migrate(db)
+            _db_migrated = True
         response.log_to_db(db)
 
         # Store conversation state for future lookups

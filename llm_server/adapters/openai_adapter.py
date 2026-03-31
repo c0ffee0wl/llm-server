@@ -68,6 +68,9 @@ def extract_messages(
 
 def _normalize_role(role: Any) -> str:
     """Convert role to string format (handles numeric roles from some clients)."""
+    if isinstance(role, bool):
+        # bool is a subclass of int; handle before int check
+        return "user"
     if isinstance(role, int):
         # Some clients send: 0=system, 1=user, 2=assistant, 3=tool
         role_map = {0: "system", 1: "user", 2: "assistant", 3: "tool"}

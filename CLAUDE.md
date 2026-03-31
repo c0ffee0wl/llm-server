@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LLM Server is an OpenAI-compatible HTTP API wrapper for the `llm` library. It allows any OpenAI API client to use local or alternative LLM models (Gemini, Vertex AI, Anthropic Claude, OpenRouter) through a unified interface.
 
+## Development Setup
+
+```bash
+# Install in editable mode with dev dependencies
+uv pip install -e ".[dev]"
+
+# Note: This project depends on forked versions of llm, llm-vertex, and llm-gemini
+# See [tool.uv.sources] in pyproject.toml for Git sources
+```
+
 ## Commands
 
 ```bash
@@ -30,7 +40,7 @@ llm-server --service --system
 # Uninstall systemd service
 llm-server --uninstall-service
 
-# Run tests
+# Run tests (no test files exist yet; test infrastructure is configured in pyproject.toml)
 pytest
 
 # Configure VS Code for local LLM mode
@@ -80,6 +90,11 @@ Use `/v1c` when clients need to select specific models (e.g., different models f
 - Formats chunks as Server-Sent Events for OpenAI API compatibility
 - Handles tool calls at stream completion
 
+**VS Code Configuration (`configure_vscode.py`):**
+- Standalone CLI tool (`configure-vscode`) for configuring VS Code to use the local LLM server
+- Supports `--user`, `--workspace`, `--dry-run`, and `--restore` modes
+- Uses `json-five` for JSONC parsing with comment preservation
+
 **Config (`llm_server/config.py`):**
 - `Settings` class with `LLM_SERVER_*` environment variable prefix
 - `get_async_model_with_fallback()` - For `/v1`: llm default → requested → settings → first available
@@ -103,3 +118,9 @@ The `is_gemini_model()` function checks for `gemini/`, `gemini-`, and `vertex/` 
 ### Database Logging
 
 Responses are logged to `~/.config/llm/log-server.db` using the llm library's migration system. Conversations are grouped by hashing message sequences. Disable with `--no-log` or `LLM_SERVER_NO_LOG=true`.
+
+## Known Limitations
+
+- **Conversation history is text-flattened**: Multi-turn conversations are passed as concatenated `User:/Assistant:` text strings rather than using the llm library's native `AsyncConversation` object. This loses structured message boundaries. See `routes/chat.py:190-217`.
+- **No test suite**: pytest is configured but no test files exist yet.
+- **Model capabilities are approximate**: Context limits use a static lookup table (`MODEL_CONTEXT_LIMITS` / `PROVIDER_DEFAULT_LIMITS`) rather than querying models dynamically.

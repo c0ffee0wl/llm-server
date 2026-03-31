@@ -7,6 +7,9 @@ from fastapi import APIRouter
 from typing import Any, Dict, List, Optional, Tuple
 
 import llm
+from fastapi.responses import JSONResponse
+
+from ..config import get_model_context_limit
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +26,17 @@ def _get_model_capabilities(model: llm.Model) -> Dict[str, Any]:
     supports_vision = bool(model.attachment_types)
     supports_tools = getattr(model, "supports_tools", False)
     can_stream = getattr(model, "can_stream", True)
+    context_limit = get_model_context_limit(model.model_id)
+    max_output = max(16384, context_limit // 8)
 
     return {
         "type": "chat",
         "family": model.model_id.split("-")[0] if "-" in model.model_id else model.model_id,
         "tokenizer": "cl100k_base",
         "limits": {
-            "max_prompt_tokens": 128000,
-            "max_output_tokens": 16384,
-            "max_context_window_tokens": 128000,
+            "max_prompt_tokens": context_limit,
+            "max_output_tokens": max_output,
+            "max_context_window_tokens": context_limit,
         },
         "supports": {
             "parallel_tool_calls": supports_tools,
@@ -127,7 +132,7 @@ async def list_models() -> Dict[str, Any]:
 
 @router.get("/v1/models/{model_id}")
 @router.get("/v1c/models/{model_id}")
-async def get_model(model_id: str) -> Dict[str, Any]:
+async def get_model(model_id: str):
     """Get a specific model by ID."""
     models = get_model_list()
     for model in models:
@@ -141,14 +146,14 @@ async def get_model(model_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.debug(f"Model '{model_id}' not found: {e}")
 
-    # Return first available model as fallback
-    if models:
-        return models[0]
-
-    # Ultimate fallback
-    return {
-        "id": model_id,
-        "object": "model",
-        "created": int(time.time()),
-        "owned_by": "llm-library",
-    }
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "message": f"The model '{model_id}' does not exist",
+                "type": "invalid_request_error",
+                "param": "model",
+                "code": "model_not_found",
+            }
+        },
+    )
