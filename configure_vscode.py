@@ -26,6 +26,15 @@ from json5.loader import ModelLoader
 from json5.dumper import dumps as json5_dumps, ModelDumper
 
 
+# VS Code variant names → config directory names
+VARIANT_DIRS = {
+    "code": "Code",
+    "code-insiders": "Code - Insiders",
+    "codium": "VSCodium",
+    "code-oss": "Code - OSS",
+}
+VARIANTS = list(VARIANT_DIRS.keys())
+
 # Settings to configure for local LLM mode
 LOCAL_LLM_SETTINGS = {
     # ========================================
@@ -55,9 +64,8 @@ LOCAL_LLM_SETTINGS = {
     # Disable online help/tips
     "workbench.tips.enabled": False,
 
-    # Disable TypeScript/JavaScript survey prompts
-    "typescript.surveys.enabled": False,
-    "javascript.surveys.enabled": False,
+    # Disable survey/feedback prompts
+    "telemetry.feedback.enabled": False,
 
     # Disable Git autofetch (reduces network calls)
     "git.autofetch": False,
@@ -69,14 +77,14 @@ LOCAL_LLM_SETTINGS = {
     # ADDITIONAL PRIVACY SETTINGS
     # ========================================
     "settingsSync.keybindingsPerPlatform": False,
-    "workbench.editSessions.autoResume": "off",
-    "workbench.editSessions.continueOn": "off",
+    "workbench.cloudChanges.autoResume": "off",
+    "workbench.cloudChanges.continueOn": "off",
 
     # ========================================
     # SHELL AND CHAT SETTINGS
     # ========================================
     "application.shellEnvironmentResolutionTimeout": 2,
-    "chat.notifyWindowOnResponseReceived": False,
+    "chat.notifyWindowOnResponseReceived": "off",
 }
 
 # Default values for restore operation
@@ -91,16 +99,19 @@ DEFAULT_VALUES = {
     "workbench.settings.enableNaturalLanguageSearch": True,
     "extensions.ignoreRecommendations": False,
     "workbench.tips.enabled": True,
-    "typescript.surveys.enabled": True,
-    "javascript.surveys.enabled": True,
+    "telemetry.feedback.enabled": True,
     "git.autofetch": False,  # Default is false
     "remote.autoForwardPorts": True,
     "settingsSync.keybindingsPerPlatform": True,
-    "workbench.editSessions.autoResume": "onReload",
-    "workbench.editSessions.continueOn": "prompt",
+    "workbench.cloudChanges.autoResume": "onReload",
+    "workbench.cloudChanges.continueOn": "prompt",
     "application.shellEnvironmentResolutionTimeout": 10,  # VS Code default
-    "chat.notifyWindowOnResponseReceived": True,  # VS Code default
+    "chat.notifyWindowOnResponseReceived": "windowNotFocused",  # VS Code default
 }
+
+assert LOCAL_LLM_SETTINGS.keys() == DEFAULT_VALUES.keys(), (
+    f"Key mismatch: {LOCAL_LLM_SETTINGS.keys() ^ DEFAULT_VALUES.keys()}"
+)
 
 
 def get_vscode_config_path(scope: str = "user", variant: str = "code") -> Path:
@@ -114,14 +125,7 @@ def get_vscode_config_path(scope: str = "user", variant: str = "code") -> Path:
     if scope == "workspace":
         return Path.cwd() / ".vscode" / "settings.json"
 
-    # Map variant names to directory names
-    variant_dirs = {
-        "code": "Code",
-        "code-insiders": "Code - Insiders",
-        "codium": "VSCodium",
-        "code-oss": "Code - OSS",
-    }
-    dir_name = variant_dirs.get(variant, "Code")
+    dir_name = VARIANT_DIRS.get(variant, "Code")
 
     # User settings location varies by platform
     if sys.platform == "win32":
@@ -136,14 +140,14 @@ def get_vscode_config_path(scope: str = "user", variant: str = "code") -> Path:
         return config_home / dir_name / "User" / "settings.json"
 
 
+def all_vscode_settings() -> list[tuple[str, Path]]:
+    """Return paths for all known VS Code variants, whether they exist or not."""
+    return [(v, get_vscode_config_path("user", v)) for v in VARIANTS]
+
+
 def find_vscode_settings() -> list[tuple[str, Path]]:
-    """Find all VS Code variant settings files that exist."""
-    found = []
-    for variant in ["code", "code-insiders", "codium", "code-oss"]:
-        path = get_vscode_config_path("user", variant)
-        if path.exists():
-            found.append((variant, path))
-    return found
+    """Find VS Code variant settings files that already exist on disk."""
+    return [(v, p) for v, p in all_vscode_settings() if p.exists()]
 
 
 def load_settings(path: Path) -> tuple[Dict[str, Any], Any]:
@@ -309,7 +313,7 @@ Examples:
         help='Apply to workspace settings (.vscode/settings.json)'
     )
     parser.add_argument(
-        '--variant', choices=['code', 'code-insiders', 'codium', 'code-oss'],
+        '--variant', choices=VARIANTS,
         default='code',
         help='VS Code variant (default: code)'
     )
@@ -360,16 +364,12 @@ Examples:
         else:
             print("No VS Code settings files found.")
             print("\nExpected locations:")
-            for variant in ["code", "code-insiders", "codium", "code-oss"]:
+            for variant in VARIANTS:
                 print(f"  {variant}: {get_vscode_config_path('user', variant)}")
         return
 
-    # Handle --all flag
     if args.all:
-        found = find_vscode_settings()
-        if not found:
-            print("No VS Code installations found.")
-            return
+        found = all_vscode_settings()
         for variant, path in found:
             print(f"\n{'='*60}")
             print(f"Configuring {variant}: {path}")
@@ -407,10 +407,9 @@ def configure_settings_file(settings_path: Path, args) -> bool:
     updated, has_changes = apply_settings(current_settings, new_settings, dry_run=args.dry_run)
 
     if not args.dry_run and has_changes:
-        # Create backup unless disabled
         if not args.no_backup and settings_path.exists():
             if backup_settings(settings_path) is None:
-                print("Aborting due to backup failure.")
+                print("Error: Could not create backup. Aborting.")
                 return False
 
         if save_settings(settings_path, updated, model):
