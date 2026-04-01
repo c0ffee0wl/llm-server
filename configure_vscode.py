@@ -178,9 +178,7 @@ def load_settings(path: Path) -> tuple[Dict[str, Any], Any]:
         return {}, None
 
     try:
-        # Load as dict for manipulation
         settings_dict = json5_loads(content)
-        # Also load as model for round-trip comment preservation
         model = json5_loads(content, loader=ModelLoader())
         return settings_dict, model
     except Exception as e:
@@ -208,65 +206,102 @@ def backup_settings(path: Path) -> Path | None:
         return None
 
 
+def _make_value_node(val: Any) -> Any:
+    """Create a json-five model node for a Python value, using double-quoted strings."""
+    from json5.model import BooleanLiteral, DoubleQuotedString, Integer, NullLiteral
+
+    if isinstance(val, bool):
+        return BooleanLiteral(val)
+    elif isinstance(val, str):
+        return DoubleQuotedString(val, raw_value=json.dumps(val))
+    elif isinstance(val, int):
+        return Integer(str(val))
+    elif val is None:
+        return NullLiteral()
+    else:
+        raise ValueError(f"Unsupported settings value type: {type(val)}")
+
+
 def update_model_with_settings(model: Any, settings: Dict[str, Any]) -> None:
     """
     Update a json-five model with new settings values in-place.
     Preserves existing comments and formatting.
-    """
-    from json5.model import KeyValuePair
-    from json5.dumper import modelize
 
-    if not hasattr(model, 'value') or not hasattr(model.value, 'key_value_pairs'):
+    Note: JSONObject.key_value_pairs is a read-only computed property that
+    returns a new list each call. We must mutate obj.keys and obj.values
+    directly, and manually construct properly formatted model nodes (since
+    modelize() produces single-quoted strings with no whitespace).
+    """
+    from json5.model import DoubleQuotedString, String
+
+    obj = model.value
+    if not hasattr(obj, 'keys') or not hasattr(obj, 'values'):
         return
 
-    # Build a map of existing keys to their index in the list
-    # Note: key.characters includes quotes, so we strip them for comparison
-    key_value_pairs = model.value.key_value_pairs
-    existing_keys = {}
-    for idx, kvp in enumerate(key_value_pairs):
-        if hasattr(kvp.key, 'characters'):
-            # Strip surrounding quotes from the key string
-            key_str = kvp.key.characters.strip('"\'')
-        else:
-            key_str = str(kvp.key).strip('"\'')
-        existing_keys[key_str] = idx
+    # Build a map of existing keys to their index
+    existing_keys: Dict[str, int] = {}
+    for idx, key_obj in enumerate(obj.keys):
+        if isinstance(key_obj, String):
+            existing_keys[key_obj.characters] = idx
 
-    # Update existing keys and track new ones
+    # Detect indentation from existing entries
+    indent = '    '  # default
+    for key_obj in obj.keys:
+        for item in getattr(key_obj, 'wsc_before', []):
+            if isinstance(item, str) and '\n' in item:
+                # Extract the indentation after the last newline
+                indent = item.split('\n')[-1]
+                break
+        if indent != '    ':
+            break
+
     for key, value in settings.items():
         if key in existing_keys:
-            # KeyValuePair is a NamedTuple (immutable), so create a new one
+            # Update existing: replace value, transfer whitespace
             idx = existing_keys[key]
-            old_kvp = key_value_pairs[idx]
-            new_kvp = KeyValuePair(
-                key=old_kvp.key,  # Preserve original key formatting
-                value=modelize(value),
-            )
-            key_value_pairs[idx] = new_kvp
+            old_val = obj.values[idx]
+            new_val = _make_value_node(value)
+            new_val.wsc_before = old_val.wsc_before
+            new_val.wsc_after = old_val.wsc_after
+            obj.values[idx] = new_val
         else:
-            # Add new key-value pair at the end
-            new_kvp = KeyValuePair(
-                key=modelize(key),
-                value=modelize(value),
-            )
-            key_value_pairs.append(new_kvp)
+            # Append new: move closing-brace whitespace from old last entry
+            if obj.trailing_comma:
+                closing_wsc = obj.trailing_comma.wsc_after
+                obj.trailing_comma.wsc_after = []
+                obj.trailing_comma = None
+            elif obj.values:
+                closing_wsc = obj.values[-1].wsc_after
+                obj.values[-1].wsc_after = []
+            else:
+                closing_wsc = ['\n']
+
+            new_key = DoubleQuotedString(key, raw_value=json.dumps(key))
+            new_key.wsc_before = ['\n' + indent]
+
+            new_val = _make_value_node(value)
+            new_val.wsc_before = [' ']
+            new_val.wsc_after = closing_wsc
+
+            obj.keys.append(new_key)
+            obj.values.append(new_val)
 
 
 def save_settings(path: Path, settings: Dict[str, Any], model: Any = None) -> bool:
     """
     Save settings to JSON file with proper formatting.
-    If model is provided, preserves comments using json-five.
+    If model is provided, preserves comments using json-five round-trip.
     Returns True on success.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             if model is not None:
-                # Update the model with new settings and dump with comment preservation
                 update_model_with_settings(model, settings)
                 f.write(json5_dumps(model, dumper=ModelDumper()))
             else:
-                # No model, just dump as formatted JSON5
-                f.write(json5_dumps(settings, indent=4))
+                json.dump(settings, f, indent=4)
+                f.write('\n')
         print(f"Settings saved to: {path}")
         return True
     except PermissionError:
@@ -407,7 +442,6 @@ def configure_settings_file(settings_path: Path, args) -> bool:
     """Configure a single settings file. Returns True on success."""
     print(f"VS Code settings file: {settings_path}")
 
-    # Load current settings (returns tuple with model for comment preservation)
     current_settings, model = load_settings(settings_path)
 
     # Determine which settings to apply
