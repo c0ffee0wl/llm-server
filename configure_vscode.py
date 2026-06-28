@@ -91,6 +91,13 @@ LOCAL_LLM_SETTINGS = {
     # ========================================
     "application.shellEnvironmentResolutionTimeout": 2,
     "chat.notifyWindowOnResponseReceived": "off",
+
+    # Experimental; can be remote-enabled via the experiment service
+    "chat.sessionSync.enabled": False,
+
+    # UI declutter (not telemetry) - hide agent/Copilot title-bar buttons
+    "chat.titleBar.openInAgentsWindow.enabled": False,
+    "chat.titleBar.signIn.enabled": False,
 }
 
 # Default values for restore operation
@@ -119,6 +126,9 @@ DEFAULT_VALUES = {
     "workbench.cloudChanges.continueOn": "prompt",
     "application.shellEnvironmentResolutionTimeout": 10,  # VS Code default
     "chat.notifyWindowOnResponseReceived": "windowNotFocused",  # VS Code default
+    "chat.sessionSync.enabled": False,  # Default is false (experimental)
+    "chat.titleBar.openInAgentsWindow.enabled": True,  # VS Code default
+    "chat.titleBar.signIn.enabled": True,  # VS Code default
 }
 
 assert LOCAL_LLM_SETTINGS.keys() == DEFAULT_VALUES.keys(), (
