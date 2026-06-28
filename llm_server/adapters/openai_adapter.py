@@ -3,7 +3,6 @@
 import base64
 import binascii
 import logging
-import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import llm
@@ -32,38 +31,6 @@ class ConversationData:
     messages: List[ParsedMessage]
     current_prompt: Optional[str]
     current_attachments: List[llm.Attachment]
-
-
-def extract_messages(
-    messages: List[Dict[str, Any]]
-) -> Tuple[Optional[str], str, List[llm.Attachment]]:
-    """
-    Extract system prompt, user prompt, and attachments from OpenAI messages.
-
-    This is the legacy function for simple single-turn usage.
-
-    Returns:
-        Tuple of (system_prompt, user_prompt, attachments)
-    """
-    conv_data = parse_conversation(messages)
-
-    # For backwards compatibility, combine all non-system messages
-    all_parts = []
-    all_attachments = list(conv_data.current_attachments)
-
-    for msg in conv_data.messages:
-        if msg.role == "user":
-            if msg.content:
-                all_parts.append(msg.content)
-            all_attachments.extend(msg.attachments)
-        elif msg.role == "assistant":
-            if msg.content:
-                all_parts.append(f"Assistant: {msg.content}")
-
-    if conv_data.current_prompt:
-        all_parts.append(conv_data.current_prompt)
-
-    return conv_data.system_prompt, "\n\n".join(all_parts), all_attachments
 
 
 def _normalize_role(role: Any) -> str:
@@ -310,31 +277,6 @@ def convert_tool_definitions(tools: Optional[List[Dict[str, Any]]]) -> List[llm.
                 )
             )
     return llm_tools
-
-
-def convert_tool_calls_to_openai(
-    tool_calls: List[Any],
-) -> List[Dict[str, Any]]:
-    """Convert llm ToolCall objects to OpenAI format."""
-    result = []
-    for tc in tool_calls:
-        func_name = tc.name if hasattr(tc, "name") else str(tc)
-        # Use UUID for deterministic, unique IDs
-        result.append(
-            {
-                "id": f"call_{uuid.uuid4().hex[:24]}",
-                "type": "function",
-                "function": {
-                    "name": func_name,
-                    "arguments": (
-                        tc.arguments
-                        if hasattr(tc, "arguments")
-                        else "{}"
-                    ),
-                },
-            }
-        )
-    return result
 
 
 def extract_tool_results(

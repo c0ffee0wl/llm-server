@@ -74,8 +74,6 @@ def generate_socket_unit(host: str, port: int) -> str:
 def generate_service_unit(
     socket_unit: str,
     model: Optional[str] = None,
-    host: str = "127.0.0.1",
-    port: int = 11435,
     debug: bool = False,
     no_log: bool = False,
 ) -> str:
@@ -144,8 +142,6 @@ def install_service(
     service_content = generate_service_unit(
         socket_unit=socket_unit_name,
         model=model,
-        host=host,
-        port=port,
         debug=debug,
         no_log=no_log,
     )

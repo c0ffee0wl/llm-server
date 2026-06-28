@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import threading
 from pydantic_settings import BaseSettings
 from typing import Optional
@@ -9,6 +10,8 @@ from typing import Optional
 import llm
 import sqlite_utils
 from llm.migrations import migrate
+
+logger = logging.getLogger(__name__)
 
 _db_migrated = False
 
@@ -236,10 +239,6 @@ def get_async_model_client_choice(
     Raises:
         ValueError: If no async model is available
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     # 1. Try requested model FIRST (client's choice takes priority)
     if requested_model and requested_model not in IGNORED_MODEL_NAMES:
         try:
@@ -311,10 +310,6 @@ def get_async_model_with_fallback(
     Raises:
         ValueError: If no async model is available
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     # 1. Try llm library's default model first (async version)
     try:
         model = llm.get_async_model()
@@ -374,15 +369,15 @@ def find_model_by_query(queries: list[str]):
     Returns:
         Model instance or None if no match found
     """
-    import llm
+    sync_models = list(llm.get_models())
 
-    for model in llm.get_models():
+    for model in sync_models:
         model_id_lower = model.model_id.lower()
         if all(q.lower() in model_id_lower for q in queries):
             return model
 
     # Fallback: search async-only models
-    sync_ids = {m.model_id for m in llm.get_models()}
+    sync_ids = {m.model_id for m in sync_models}
     for model in llm.get_async_models():
         if model.model_id not in sync_ids:
             model_id_lower = model.model_id.lower()
@@ -411,10 +406,6 @@ def get_embedding_model_with_fallback(
     Raises:
         ValueError: If no embedding model is available
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     # 1. Try requested model first (client's choice takes priority)
     if requested_model and requested_model not in IGNORED_MODEL_NAMES:
         try:
@@ -501,9 +492,7 @@ def log_response_to_db(response, messages: list[dict] = None):
     """
     if settings.no_log:
         return
-    import logging
     from llm.models import Conversation, Response, AsyncResponse
-    logger = logging.getLogger(__name__)
     try:
         # Manual field copy from AsyncResponse to sync Response for logging.
         # The llm library's AsyncResponse.to_sync_response() is async and cannot

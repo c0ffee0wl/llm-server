@@ -121,7 +121,7 @@ async def stream_llm_response(
         if response_type == "chat" and tool_calls:
             from ..adapters.tool_adapter import format_streaming_tool_call_delta
 
-            tool_delta = format_streaming_tool_call_delta(tool_calls, 0)
+            tool_delta = format_streaming_tool_call_delta(tool_calls)
             if tool_delta:
                 tool_msg = {
                     "id": response_id,

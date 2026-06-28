@@ -22,8 +22,6 @@ def _serialize_arguments(args: Any) -> str:
             return args
         except json.JSONDecodeError:
             return json.dumps({"value": args})
-    if isinstance(args, dict):
-        return json.dumps(args)
     return json.dumps(args)
 
 
@@ -82,7 +80,6 @@ def format_tool_call_response(
 
 def format_streaming_tool_call_delta(
     tool_calls: List[Any],
-    chunk_index: int,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Format tool calls for streaming SSE delta format.
@@ -108,4 +105,4 @@ def format_streaming_tool_call_delta(
         }
         formatted_calls.append(call_delta)
 
-    return formatted_calls if formatted_calls else None
+    return formatted_calls

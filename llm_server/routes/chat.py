@@ -41,32 +41,6 @@ class ChatMessage(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
 
-    def get_role_str(self) -> str:
-        """Convert role to string format."""
-        if isinstance(self.role, int):
-            role_map = {0: "system", 1: "user", 2: "assistant", 3: "tool"}
-            return role_map.get(self.role, "user")
-        return str(self.role)
-
-    def get_content_str(self) -> str:
-        """Extract text content from various formats."""
-        if isinstance(self.content, str):
-            return self.content
-        if isinstance(self.content, list):
-            # Handle numeric format: [{"type": 1, "text": "..."}]
-            # or standard format: [{"type": "text", "text": "..."}]
-            texts = []
-            for part in self.content:
-                if isinstance(part, dict):
-                    if "text" in part:
-                        texts.append(part["text"])
-                    elif "value" in part:
-                        texts.append(part["value"])
-                elif isinstance(part, str):
-                    texts.append(part)
-            return "\n".join(texts)
-        return str(self.content) if self.content else ""
-
 
 class FunctionDef(BaseModel):
     """Function definition for tool calling."""
